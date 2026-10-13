@@ -1,0 +1,88 @@
+---
+# Step types for the "Site build demo" workflow. The jobs are the mocks in jobs/site_build.py: each runs a random
+# 1-5 minutes and fails at random with a "Provoked stop" reason. Lower `failure_percent` below to see a clean run.
+
+- name: "Site build demo - Site intake"
+  weight: 10
+  job_execution_type: "input"
+  description: "The site's details, filled in by a person."
+  execution_instructions: |
+    Fill in the site's details. The later steps read them from this step's values.
+  writes: "site_intake"
+  input:
+    site_code:
+      type: string
+      label: "Site code"
+      help: "Three letters and two digits, such as SJC04."
+      required: true
+      pattern: "^[A-Z]{3}[0-9]{2}$"
+    site_name:
+      type: string
+      label: "Site name"
+      required: true
+      max_length: 100
+    device_count:
+      type: integer
+      label: "Devices at the site"
+      required: true
+      min: 1
+      max: 48
+      default: 4
+    image:
+      type: string
+      label: "Software image"
+      default: "17.12.4"
+
+- name: "Site build demo - Allocate site prefixes"
+  weight: 20
+  job: "Site build demo - Allocate site prefixes"
+  job_execution_type: "auto"
+  retry: safe  # allocating again is harmless, so Retry runs at one click
+  description: "Mock prefix allocation."
+  job_form_defaults:
+    site_code: {nbo_record_workflow_data: "true", key: "site_intake__site_code", type: "stringvar"}
+    device_count: {nbo_record_workflow_data: "true", key: "site_intake__device_count", type: "intvar"}
+    failure_percent: {value: 25, type: "intvar"}
+
+- name: "Site build demo - Render site configs"
+  weight: 30
+  job: "Site build demo - Render site configs"
+  job_execution_type: "auto"
+  retry: safe
+  description: "Mock configuration rendering."
+  job_form_defaults:
+    site_code: {nbo_record_workflow_data: "true", key: "site_intake__site_code", type: "stringvar"}
+    site_name: {nbo_record_workflow_data: "true", key: "site_intake__site_name", type: "stringvar"}
+    failure_percent: {value: 25, type: "intvar"}
+
+- name: "Site build demo - Push site configs"
+  weight: 40
+  job: "Site build demo - Push site configs"
+  job_execution_type: "auto"
+  retry: confirm  # a rerun touches devices, so Retry asks first and offers Retry with changes
+  rollback: "Site build demo - Roll back site configs"
+  timeout: 10m  # listed under Operations > Stuck steps after 10 minutes
+  description: "Mock configuration push. When it fails, Run rollback is offered."
+  job_form_defaults:
+    site_code: {nbo_record_workflow_data: "true", key: "site_intake__site_code", type: "stringvar"}
+    image: {nbo_record_workflow_data: "true", key: "site_intake__image", type: "stringvar"}
+    failure_percent: {value: 40, type: "intvar"}
+
+- name: "Site build demo - Roll back site configs"
+  weight: 90
+  job: "Site build demo - Roll back site configs"
+  job_execution_type: "manual"
+  handler: true  # never runs in the normal order; "Run rollback" on a failed push runs it
+  description: "Mock rollback of the push."
+  job_form_defaults:
+    site_code: {nbo_record_workflow_data: "true", key: "site_intake__site_code", type: "stringvar"}
+    failure_percent: {value: 10, type: "intvar"}
+
+- name: "Site build demo - Site acceptance"
+  weight: 50
+  job_execution_type: "manual"
+  retry: never
+  description: "A person checks the site and completes this step."
+  execution_instructions: |
+    Check that every device at the site answers and carries the pushed configuration, then set this step to
+    Completed.
