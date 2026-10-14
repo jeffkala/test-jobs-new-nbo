@@ -1,0 +1,24 @@
+---
+- name: "OS upgrade demo - Campaign"
+  description: "The campaign record: the target version for every device, then Wait for children."
+  step_types:
+    - "OS upgrade demo - Campaign intake"
+    - "Wait for children"
+
+- name: "OS upgrade demo - Device"
+  description: "Each device's upgrade: pre-checks, free space, upload, install, reboot, wait, post-check, validation."
+  step_types:
+    - "OS upgrade demo - Start"
+    - "OS upgrade demo - Pre-check interfaces"
+    - "OS upgrade demo - Pre-check routing"
+    - "OS upgrade demo - Pre-check neighbors"
+    - "OS upgrade demo - Pre-check processor"
+    - "OS upgrade demo - Pre-check uptime"
+    - "OS upgrade demo - Check free space"
+    - "OS upgrade demo - Upload OS"
+    - "OS upgrade demo - Install OS"
+    - "OS upgrade demo - Reboot device"
+    - "OS upgrade demo - Wait for the device"
+    - "OS upgrade demo - Post-check"
+    - "OS upgrade demo - Validate upgrade"
+    - "OS upgrade demo - Complete device record"

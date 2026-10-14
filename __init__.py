@@ -1,1 +1,1 @@
-"""Example Nautobot Git repository: mock site build jobs and the NBO definitions that run them."""
+"""Example Nautobot Git repository: mock jobs and the NBO definitions of a site build and an OS upgrade campaign."""

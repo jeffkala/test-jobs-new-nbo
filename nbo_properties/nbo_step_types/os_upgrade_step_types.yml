@@ -1,0 +1,188 @@
+---
+# Step types for the OS upgrade campaign demo. The jobs are the mocks in jobs/os_upgrade.py: they make up numbers
+# for each device, take a few seconds to a few minutes, and now and then fail on purpose. Change `failure_percent`,
+# `short_percent` or `mismatch_percent` below to see more or fewer failures.
+#
+# The wait's check is named by its class path, which starts with the Git repository's slug. The README names the
+# repository "NBO demo", whose slug is `nbo_demo`; with another slug, change the path under `wait.check`.
+
+# --- The campaign record ----------------------------------------------------------------------------------------
+
+- name: "OS upgrade demo - Campaign intake"
+  weight: 10
+  job_execution_type: "input"
+  description: "The campaign's target version and image, filled in once for every device."
+  execution_instructions: |
+    Fill in the version every device in the campaign upgrades to. Each device's upload and install read it from
+    here, so submit this before any device reaches its upload.
+  writes: "campaign"
+  input:
+    target_version:
+      type: string
+      label: "Target version"
+      help: "Such as 17.12.4."
+      required: true
+      pattern: "^[0-9]+(\\.[0-9]+){1,3}[a-z]?$"
+    image_size_mb:
+      type: integer
+      label: "Image size (MB)"
+      required: true
+      min: 100
+      max: 20000
+      default: 1450
+    maintenance_window:
+      type: string
+      label: "Maintenance window"
+      help: "Such as Sat 02:00-06:00 UTC."
+      max_length: 100
+
+# --- Each device's record ---------------------------------------------------------------------------------------
+
+- name: "OS upgrade demo - Start"
+  weight: 10
+  job_execution_type: "manual"
+  description: "A person starts the device's upgrade."
+  execution_instructions: |
+    Set this step to Completed to start the device's pre-checks. To start many devices at once, select their
+    Start steps in the NBO Steps list and bulk edit their status to Completed.
+
+- name: "OS upgrade demo - Pre-check interfaces"
+  weight: 20
+  job: "OS upgrade demo - Pre-check interfaces"
+  job_execution_type: "auto"
+  retry: safe  # a read-only check, so Retry runs at one click
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    failure_percent: {value: 5, type: "intvar"}
+
+- name: "OS upgrade demo - Pre-check routing"
+  weight: 21
+  job: "OS upgrade demo - Pre-check routing"
+  job_execution_type: "auto"
+  retry: safe
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    failure_percent: {value: 5, type: "intvar"}
+
+- name: "OS upgrade demo - Pre-check neighbors"
+  weight: 22
+  job: "OS upgrade demo - Pre-check neighbors"
+  job_execution_type: "auto"
+  retry: safe
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    failure_percent: {value: 5, type: "intvar"}
+
+- name: "OS upgrade demo - Pre-check processor"
+  weight: 23
+  job: "OS upgrade demo - Pre-check processor"
+  job_execution_type: "auto"
+  retry: safe
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    failure_percent: {value: 5, type: "intvar"}
+
+- name: "OS upgrade demo - Pre-check uptime"
+  weight: 24
+  job: "OS upgrade demo - Pre-check uptime"
+  job_execution_type: "auto"
+  retry: safe
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    failure_percent: {value: 5, type: "intvar"}
+
+- name: "OS upgrade demo - Check free space"
+  weight: 30
+  job: "OS upgrade demo - Check free space"
+  job_execution_type: "auto"
+  retry: safe
+  description: "Fails when the image wouldn't fit, so the upload never starts until someone frees space and retries."
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    image_size_mb: {nbo_record_parent_workflow_data: "true", key: "campaign__image_size_mb", type: "intvar"}
+    short_percent: {value: 20, type: "intvar"}
+    failure_percent: {value: 0, type: "intvar"}
+
+- name: "OS upgrade demo - Upload OS"
+  weight: 40
+  job: "OS upgrade demo - Upload OS"
+  job_execution_type: "auto"
+  retry: confirm  # a second copy wastes a maintenance window, so Retry asks first
+  timeout: 15m  # listed under Operations > Stuck steps after 15 minutes
+  description: "Starts only after the free space check passes: chaining stops at a Failed step."
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    target_version: {nbo_record_parent_workflow_data: "true", key: "campaign__target_version", type: "stringvar"}
+    min_seconds: {value: 60, type: "intvar"}
+    max_seconds: {value: 180, type: "intvar"}
+    failure_percent: {value: 10, type: "intvar"}
+
+- name: "OS upgrade demo - Install OS"
+  weight: 50
+  job: "OS upgrade demo - Install OS"
+  job_execution_type: "manual"
+  retry: confirm
+  description: "A person runs the install from the step's Job Form."
+  execution_instructions: |
+    Check the maintenance window has started, then open **Job Form** and run the install. The step completes when
+    the job succeeds.
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    target_version: {nbo_record_parent_workflow_data: "true", key: "campaign__target_version", type: "stringvar"}
+    min_seconds: {value: 30, type: "intvar"}
+    max_seconds: {value: 90, type: "intvar"}
+    failure_percent: {value: 10, type: "intvar"}
+
+- name: "OS upgrade demo - Reboot device"
+  weight: 60
+  job: "OS upgrade demo - Reboot device"
+  job_execution_type: "manual"
+  retry: never  # a second reload takes the device down again; mark it done by hand instead
+  description: "A person reloads the device from the step's Job Form."
+  execution_instructions: |
+    Open **Job Form** and run the reload. The wait after this step starts when it completes.
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    min_seconds: {value: 5, type: "intvar"}
+    max_seconds: {value: 10, type: "intvar"}
+    failure_percent: {value: 0, type: "intvar"}
+
+- name: "OS upgrade demo - Wait for the device"
+  weight: 70
+  job_execution_type: "wait"
+  description: "Waits up to an hour for the device to answer after its reload."
+  wait:
+    check: "nbo_demo.jobs.os_upgrade.DeviceBackAfterReboot"
+    deadline: 1h
+    backoff: [1m]
+  writes: "back"
+
+- name: "OS upgrade demo - Post-check"
+  weight: 80
+  job: "OS upgrade demo - Post-check"
+  job_execution_type: "auto"
+  retry: safe
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    mismatch_percent: {value: 15, type: "intvar"}
+    failure_percent: {value: 5, type: "intvar"}
+
+- name: "OS upgrade demo - Validate upgrade"
+  weight: 90
+  job: "OS upgrade demo - Validate upgrade"
+  job_execution_type: "auto"
+  retry: safe
+  description: "Compares the pre-checks with the post-check, and fails on a difference."
+  job_form_defaults:
+    device: {nbo_record_device: "true", type: "objvar"}
+    min_seconds: {value: 5, type: "intvar"}
+    max_seconds: {value: 15, type: "intvar"}
+    failure_percent: {value: 0, type: "intvar"}
+
+- name: "OS upgrade demo - Complete device record"
+  weight: 100
+  job: "NBO Workflow - Complete Workflow"
+  job_execution_type: "auto"
+  description: "Sets the device's record Completed, which the campaign's Wait for children counts."
+  job_form_defaults:
+    remove_device_from_nbo_record: {value: "false", type: "booleanvar"}
