@@ -1,0 +1,45 @@
+name: example-device-change
+description: >-
+  Change one device with mock jobs: check it, agree a window, approve a risky change, apply it with a rollback,
+  check it again, and record it. The site rollout runs it for each device; it also runs on its own.
+for: device
+inputs:
+  change_ticket: {type: string, default: CHG0000000}
+  vlan: {type: integer, default: 120, min: 2, max: 4094}
+  hostname: {type: string, optional: true}
+  message: {type: string, default: "Device change finished."}
+steps:
+  - phase: Check
+  - Pre-check: mock.PreCheck
+  - Reachable before:
+      wait: mock.Reachable
+      with: {ready_percent: 70, min_seconds: 5, max_seconds: 15}
+      timeout: 30m
+
+  - phase: Plan
+  - Maintenance window:
+      job: mock.RecordWindow
+      manual: network-ops
+      description: Pick the window, add notes, and confirm you've told the site contact.
+  - High-risk approval:
+      approve: network-change
+      description: The pre-check rated this change high risk.
+      when: {pre_check.risk: high}
+      timeout: 1d
+
+  - phase: Change
+  - Apply change:
+      job: mock.ApplyChange
+      rollback: mock.RevertChange
+      timeout: 10m
+  - Reachable after:
+      wait: mock.Reachable
+      with: {ready_percent: 50, min_seconds: 5, max_seconds: 15}
+      timeout: 1h
+  - Post-check: mock.PostCheck
+
+  - phase: Record
+  - Register in CMDB: mock.RegisterInCmdb
+  - Notify:
+      job: mock.Notify
+      with: {run_id: run.id}

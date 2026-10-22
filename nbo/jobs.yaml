@@ -1,0 +1,58 @@
+# The mock jobs' catalogue entries: what a rerun does (effect) and what each returns (gives).
+# Variables are listed too, so `nbo validate` checks the workflows offline, before Nautobot has the jobs.
+# Every mock job also takes fail_percent, min_seconds and max_seconds.
+
+mock.AllocateAddressing:
+  vars: [location, site_code, fail_percent, min_seconds, max_seconds]
+  effect: idempotent
+  gives: {mgmt_prefix: string}
+mock.ReleaseAddressing:
+  vars: [location, site_code, fail_percent, min_seconds, max_seconds]
+  effect: idempotent
+mock.DiscoverDevices:
+  vars: [location, fail_percent, min_seconds, max_seconds]
+  effect: read
+  gives: {devices: list, count: integer}
+mock.GeneratePortMap:
+  vars: [location, fail_percent, min_seconds, max_seconds]
+  effect: read
+  gives: {port_map: list}
+mock.OrderCircuit:
+  vars: [location, site_code, fail_percent, min_seconds, max_seconds]
+  effect: opens_external
+  gives: {order_id: string}
+mock.SetLifecycle:
+  vars: [location, stage, fail_percent, min_seconds, max_seconds]
+  effect: idempotent
+  gives: {stage: string}
+mock.Notify:
+  vars: [message, run_id, fail_percent, min_seconds, max_seconds]
+  effect: idempotent
+  gives: {sent: boolean}
+mock.PreCheck:
+  vars: [device, fail_percent, min_seconds, max_seconds]
+  effect: read
+  gives: {snapshot: json, fits: boolean, risk: string}
+mock.Reachable:
+  vars: [device, ready_percent, fail_percent, min_seconds, max_seconds]
+  effect: read
+  gives: {latency_ms: integer}
+mock.RecordWindow:
+  vars: [window, notes, confirmed, fail_percent, min_seconds, max_seconds]
+  effect: idempotent
+  gives: {window: string, notes: string, confirmed: boolean}
+mock.ApplyChange:
+  vars: [device, vlan, change_ticket, fail_percent, min_seconds, max_seconds]
+  effect: changes_network
+  gives: {applied_vlan: integer, config_lines: integer}
+mock.RevertChange:
+  vars: [device, vlan, fail_percent, min_seconds, max_seconds]
+  effect: idempotent
+mock.PostCheck:
+  vars: [device, fail_percent, min_seconds, max_seconds]
+  effect: read
+  gives: {snapshot: json}
+mock.RegisterInCmdb:
+  vars: [device, change_ticket, fail_percent, min_seconds, max_seconds]
+  effect: opens_external
+  gives: {record_id: string}

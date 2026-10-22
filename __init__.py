@@ -1,1 +1,1 @@
-"""Example Nautobot Git repository: mock jobs and the NBO definitions of a site build and an OS upgrade campaign."""
+"""Nautobot imports a Git repository as a package, so its root needs this file for `jobs` to be found."""
