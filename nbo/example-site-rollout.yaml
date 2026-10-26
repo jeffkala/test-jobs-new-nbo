@@ -9,7 +9,7 @@ inputs:
   site_code: {type: string, pattern: "^[A-Z]{3}[0-9]{2}$", help: "Three letters and two digits, such as BHM01"}
   change_ticket: {type: string, pattern: "^CHG[0-9]{7}$", help: "The approved change, such as CHG0052214"}
   office_type: {type: choice, choices: [branch, campus, datacenter], default: branch}
-  vlan: {type: integer, default: 120, min: 2, max: 4094}
+  vlan: {type: integer, label: VLAN, default: 120, min: 2, max: 4094}
   wants_circuit: {type: boolean, default: true, label: "Order a circuit"}
   go_live: {type: date, optional: true, label: "Planned go-live date"}
   contacts: {type: list, optional: true, help: "Site contacts, one a line"}

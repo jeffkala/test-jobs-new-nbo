@@ -5,7 +5,7 @@ description: >-
 for: device
 inputs:
   change_ticket: {type: string, default: CHG0000000}
-  vlan: {type: integer, default: 120, min: 2, max: 4094}
+  vlan: {type: integer, label: VLAN, default: 120, min: 2, max: 4094}
   hostname: {type: string, optional: true}
   message: {type: string, default: "Device change finished."}
 steps:

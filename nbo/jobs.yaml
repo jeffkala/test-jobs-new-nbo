@@ -56,3 +56,222 @@ mock.RegisterInCmdb:
   vars: [device, change_ticket, fail_percent, min_seconds, max_seconds]
   effect: opens_external
   gives: {record_id: string}
+
+# ------------------------------------------------------------------------------------------------ NBO demo jobs
+# The jobs of the five demo workflows. Every one also takes ticket, demo_failure, fail_percent, min_seconds and
+# max_seconds (see jobs/demo.py).
+
+demo.Notify:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, channel, run_id, requested_by, summary, details]
+  effect: idempotent
+  gives: {posted: boolean, message: string}
+itsm.RaiseChange:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, risk, application, target_version, dynamic_group]
+  effect: opens_external
+  gives: {change_number: string, state: string, short_description: string, window_start: string, window_end: string, url: string}
+itsm.InsideWindow:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, change_number]
+  effect: read
+itsm.CloseChange:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, change_number, details]
+  effect: idempotent
+  gives: {closed: boolean, close_code: string}
+itsm.UpdateTicket:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, note]
+  effect: idempotent
+  gives: {work_note: string, ticket_state: string}
+firewall.ValidateFlows:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, flows]
+  effect: read
+  gives: {flows: list, flow_count: integer, objects: list}
+firewall.PathAnalysis:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, flows]
+  effect: read
+  gives: {firewalls: list, firewall_count: integer, path: list, already_permitted: integer}
+firewall.AssessRisk:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, flows, environment]
+  effect: read
+  gives: {risk: string, score: integer, findings: list, needs_review: boolean}
+firewall.CompilePolicy:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, flows, firewalls, change_number]
+  effect: read
+  gives: {rules: list, rule_count: integer}
+firewall.SnapshotPolicy:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {policy: json, backup_id: string}
+firewall.PushPolicy:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, rules, change_number, backup_id]
+  effect: changes_network
+  gives: {commit_id: string, rules_added: integer, pushed: list}
+firewall.RestorePolicy:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, backup_id]
+  effect: idempotent
+  gives: {restored: string}
+firewall.TestFlows:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, rules]
+  effect: read
+  gives: {hits: list}
+firewall.TraceFlows:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, flows]
+  effect: read
+  gives: {traces: list}
+firewall.ScheduleRecertification:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, expires, change_number]
+  effect: idempotent
+  gives: {review_task: string, expires: string}
+compliance.BackupConfigs:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, dynamic_group]
+  effect: read
+  gives: {backed_up: integer, backups: list}
+compliance.RunCompliance:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, dynamic_group, features]
+  effect: read
+  gives: {score: integer, compliant_devices: integer, noncompliant: list, noncompliant_count: integer, report: list}
+compliance.CheckDevice:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, features, must_pass]
+  effect: read
+  gives: {compliance: json, failing: list, risk: string, score: integer}
+compliance.GenerateRemediation:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, failing]
+  effect: read
+  gives: {remediation: list, line_count: integer}
+compliance.BackupConfig:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {backup_id: string}
+compliance.ApplyRemediation:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, remediation, backup_id]
+  effect: changes_network
+  gives: {applied_lines: integer}
+compliance.RestoreConfig:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, backup_id]
+  effect: idempotent
+  gives: {restored: string}
+compliance.PublishReport:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, dynamic_group, score_before, score_after]
+  effect: idempotent
+  gives: {report_url: string, improvement: string}
+software.PlanUpgrade:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, dynamic_group, target_version]
+  effect: read
+  gives: {plan: list, canary: list, fleet: list, to_upgrade: integer, already_current: integer, image: string}
+software.StageImage:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, target_version]
+  effect: idempotent
+  gives: {image_md5: string, servers: list}
+software.Snapshot:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {snapshot: json, version: string}
+software.CheckFlash:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, target_version]
+  effect: read
+  gives: {free_mb: integer, needed_mb: integer, fits: boolean}
+software.CopyImage:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, target_version]
+  effect: idempotent
+  gives: {copied: string, transfer_mbps: integer}
+software.VerifyImage:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, target_version, image_md5]
+  effect: read
+  gives: {md5: string, verified: boolean}
+software.InstallImage:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, target_version, reload, console_confirmed, notes]
+  effect: changes_network
+  gives: {installed: string, reload: string, notes: string}
+software.RollbackImage:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: idempotent
+  gives: {rolled_back_to: string}
+software.DeviceBack:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, target_version]
+  effect: read
+  gives: {boot_seconds: integer}
+software.ComparePrePost:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, pre, post]
+  effect: read
+  gives: {differences: list, verdict: string}
+software.RecordVersion:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, target_version]
+  effect: idempotent
+  gives: {software_version: string}
+onboarding.SetLifecycle:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, stage]
+  effect: idempotent
+  gives: {stage: string}
+onboarding.ValidateRecord:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {mgmt_ip: string, platform: string, serial: string, checks: list}
+onboarding.Reachable:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {rtt_ms: integer}
+onboarding.DiscoverFacts:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {facts: json, serial_matches: boolean}
+onboarding.Register:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, system, hostname, mgmt_ip, site]
+  effect: opens_external
+  gives: {record_id: string, record_url: string, registered_as: string}
+onboarding.PushAaa:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, hostname, mgmt_ip]
+  effect: changes_network
+  gives: {aaa_lines: list}
+onboarding.RemoveAaa:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, hostname]
+  effect: idempotent
+  gives: {removed: boolean}
+onboarding.RecordHealthy:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, system, hostname, record_id]
+  effect: read
+onboarding.SoakClean:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {alarms: integer, flaps: integer}
+ports.SetLifecycle:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, stage]
+  effect: idempotent
+  gives: {stage: string}
+ports.CheckPort:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface]
+  effect: read
+  gives: {port_state: json, switch: string, patch_panel: string}
+ports.CheckVlan:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, vlan]
+  effect: read
+  gives: {vlan_present: boolean, vlan_name: string}
+ports.CheckPoe:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, service]
+  effect: read
+  gives: {poe_needed_w: integer, poe_available_w: integer}
+ports.CreateVlan:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, vlan, vlan_name]
+  effect: changes_network
+  gives: {created_vlan: integer}
+ports.RemoveVlan:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, vlan]
+  effect: idempotent
+  gives: {removed_vlan: integer}
+ports.ConfigurePort:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, service, vlan, voice_vlan, poe, port_description]
+  effect: changes_network
+  gives: {config: list, config_lines: integer}
+ports.ShutdownPort:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface]
+  effect: idempotent
+  gives: {shut: boolean}
+ports.LinkUp:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, service]
+  effect: read
+  gives: {speed: string, duplex: string, endpoint_mac: string}
+ports.VerifyPort:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface]
+  effect: read
+  gives: {port_state: json}
+ports.RecordInterface:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, vlan, config]
+  effect: idempotent
+  gives: {recorded: string}
