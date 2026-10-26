@@ -1,0 +1,62 @@
+name: device-readiness
+description: >-
+  Make a new device ready for production: check its Nautobot record, reach it, compare what it says with the
+  record, register it in ISE, monitoring, DNS, backup and the CMDB at once, soak it, and put it live.
+for: device
+lifecycle: [Planned, Staged, Validated, Active]
+inputs:
+  ticket: {type: string, pattern: "^(RITM|CHG)[0-9]{7}$", help: "The onboarding request, such as RITM0077001"}
+  systems:
+    type: list
+    default: [ise, monitoring, dns, backup, cmdb]
+    help: "Where to register the device, one a line: ise, monitoring, dns, backup, cmdb, syslog"
+  site_contact: {type: string, optional: true, label: "Site contact"}
+  demo_failure:
+    type: choice
+    label: "Demo: make a step fail"
+    help: "Fails once for this ticket, so you can show the recovery"
+    choices: [none, serial-mismatch, ise-rejects, monitoring-not-polling]
+    default: none
+steps:
+  - phase: Validate
+  - Validate record: onboarding.ValidateRecord
+  - Mark staged:
+      job: onboarding.SetLifecycle
+      with: {stage: 1}
+  - Reachable:
+      wait: onboarding.Reachable
+      timeout: 30m
+  - Discover facts: onboarding.DiscoverFacts
+  - Accept serial mismatch:
+      approve: network-change
+      description: >-
+        The serial the device reports isn't the one in Nautobot: an RMA swap, or the wrong box on site. Compare
+        them in Discover facts, and approve only if the record should follow the device.
+      when: {discover_facts.serial_matches: false}
+      timeout: 1d
+
+  - phase: Register
+  - Register everywhere:
+      for_each: systems
+      workflow: readiness-register
+      with: {system: item, hostname: device.name, mgmt_ip: validate_record.mgmt_ip, site: device.location.name}
+
+  - phase: Soak
+  - Soak clean:
+      wait: onboarding.SoakClean
+      timeout: 4d
+  - Mark validated:
+      job: onboarding.SetLifecycle
+      with: {stage: 2}
+
+  - phase: Go live
+  - Go-live approval:
+      approve: network-change
+      description: The device is registered everywhere and soaked clean. Approve to put it in production.
+      timeout: 2d
+  - Mark active:
+      job: onboarding.SetLifecycle
+      with: {stage: 3}
+  - Notify:
+      job: demo.Notify
+      with: {run_id: run.id, requested_by: run.requested_by, details: discover_facts.facts}

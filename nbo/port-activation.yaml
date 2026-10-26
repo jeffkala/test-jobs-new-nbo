@@ -1,0 +1,70 @@
+name: port-activation
+description: >-
+  Activate an access port for an endpoint: check the port is free, its VLAN exists and the switch has PoE to
+  spare, reserve it, patch it, configure it with an automatic shutdown if the push fails, see the endpoint come
+  up, and record the port in Nautobot.
+for: interface
+lifecycle: [Planned, Reserved, Active]
+inputs:
+  ticket: {type: string, pattern: "^(RITM|INC)[0-9]{7}$", help: "The request, such as RITM0055012"}
+  service: {type: choice, choices: [user-desk, voice-phone, wireless-ap, camera, server], default: user-desk}
+  vlan: {type: integer, label: "Data VLAN", default: 10, min: 2, max: 4094, help: "A VLAN Nautobot lacks is created"}
+  voice_vlan: {type: integer, label: "Voice VLAN", optional: true, min: 2, max: 4094}
+  poe: {type: boolean, label: "Needs PoE", default: true}
+  port_description: {type: string, optional: true, label: "Port description"}
+  demo_failure:
+    type: choice
+    label: "Demo: make a step fail"
+    help: "Fails once for this ticket, so you can show the recovery"
+    choices: [none, config-rejected, link-down]
+    default: none
+steps:
+  - phase: Check
+  - Check port free: ports.CheckPort
+  - Check VLAN:
+      job: ports.CheckVlan
+      after: [Check port free]
+  - Check PoE budget:
+      job: ports.CheckPoe
+      when: {poe: true}
+      after: [Check port free]
+  - Reserve port:
+      job: ports.SetLifecycle
+      with: {stage: 1}
+      after: [Check VLAN, Check PoE budget]
+
+  - phase: Approve
+  - Server port approval:
+      approve: network-change
+      description: A server port in a campus closet needs the change team's approval.
+      when: {service: server}
+      timeout: 1d
+
+  - phase: Configure
+  - Create VLAN:
+      job: ports.CreateVlan
+      rollback: ports.RemoveVlan
+      with: {vlan_name: check_vlan.vlan_name}
+      when: {check_vlan.vlan_present: false}
+  - Patch the endpoint:
+      manual: field-ops
+      description: >-
+        Patch the endpoint to the switch port at the patch panel position below, then mark this done. The port
+        is shut until the next step configures it.
+      with: {switch: check_port_free.switch, patch_panel: check_port_free.patch_panel, port: check_port_free.port_state}
+  - Configure port:
+      job: ports.ConfigurePort
+      rollback: ports.ShutdownPort
+      timeout: 10m
+  - Link up:
+      wait: ports.LinkUp
+      timeout: 30m
+
+  - phase: Close
+  - Verify port: ports.VerifyPort
+  - Record in Nautobot:
+      job: ports.RecordInterface
+      with: {config: configure_port.config}
+  - Update ticket:
+      job: itsm.UpdateTicket
+      with: {note: link_up.endpoint_mac}

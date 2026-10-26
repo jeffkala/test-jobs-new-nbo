@@ -1,0 +1,22 @@
+name: readiness-register
+description: >-
+  Register a device in one system and wait until that system shows it healthy. For ISE, also point the device's
+  AAA at it.
+inputs:
+  system: {type: choice, choices: [ise, monitoring, dns, backup, cmdb, syslog]}
+  hostname: string
+  mgmt_ip: {type: string, optional: true}
+  site: {type: string, optional: true}
+  ticket: {type: string, default: RITM0000000}
+  demo_failure: {type: string, default: none}
+steps:
+  - Register: onboarding.Register
+  - Point AAA at ISE:
+      job: onboarding.PushAaa
+      rollback: onboarding.RemoveAaa
+      when: {system: ise}
+  - Healthy in system:
+      wait: onboarding.RecordHealthy
+      with: {record_id: register.record_id}
+      after: [Register]
+      timeout: 1h

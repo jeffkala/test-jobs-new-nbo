@@ -1,0 +1,59 @@
+name: software-upgrade-campaign
+description: >-
+  Upgrade a group of switches: plan who needs the target version, get the change approved, stage the image,
+  upgrade one canary and sign it off, then upgrade the rest two at a time.
+for: dynamic_group
+inputs:
+  ticket: {type: string, pattern: "^(CHG|RITM)[0-9]{7}$", help: "The change or request, such as CHG0042424"}
+  target_version: {type: choice, label: "Target version", choices: ["17.9.5", "17.12.4", "17.15.1"], default: "17.12.4"}
+  demo_failure:
+    type: choice
+    label: "Demo: make a step fail"
+    help: "Fails once for this ticket, so you can show the recovery"
+    choices: [none, install-fails, image-corrupt, peer-lost]
+    default: none
+steps:
+  - phase: Plan
+  - Plan upgrade: software.PlanUpgrade
+  - Raise change: itsm.RaiseChange
+  - Stage image:
+      job: software.StageImage
+      after: [Plan upgrade]
+  - CAB approval:
+      approve: change-advisory-board
+      description: >-
+        Read the plan, which says which switches upgrade, in which wave, and with which image. Approve to start
+        the canary.
+      after: [Raise change]
+      timeout: 3d
+
+  - phase: Canary
+  - Upgrade canary:
+      for_each: plan_upgrade.canary
+      workflow: software-upgrade-device
+      with: {change_number: raise_change.change_number, image_md5: stage_image.image_md5}
+      when: {plan_upgrade.canary: true}
+      after: [CAB approval, Stage image]
+  - Canary sign-off:
+      approve: network-change
+      description: >-
+        The canary runs the new version. Open its request, read Compare (before and after), then sign off to
+        upgrade the rest of the group.
+      when: {plan_upgrade.canary: true}
+      timeout: 1d
+
+  - phase: Fleet
+  - Upgrade fleet:
+      for_each: plan_upgrade.fleet
+      workflow: software-upgrade-device
+      with: {change_number: raise_change.change_number, image_md5: stage_image.image_md5}
+      when: {plan_upgrade.fleet: true}
+      waves: 2
+
+  - phase: Close
+  - Close change:
+      job: itsm.CloseChange
+      with: {change_number: raise_change.change_number, details: plan_upgrade.plan}
+  - Notify:
+      job: demo.Notify
+      with: {run_id: run.id, requested_by: run.requested_by, details: plan_upgrade.plan}
