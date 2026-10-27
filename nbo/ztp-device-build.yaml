@@ -1,13 +1,11 @@
 name: ztp-device-build
 description: >-
   Bring one device from its bootstrap to the office profile: upgrade it to the approved firmware and apply its
-  config through the platform that owns it, set its local admin from the PAM, and compare before and after.
+  config through the platform that owns it, set its local admin from BeyondTrust, and compare before and after.
 for: device
 inputs:
   ticket: {type: string, default: RITM0000000}
   office_type: {type: choice, choices: [normal, ebc], default: normal}
-  switch_management: {type: choice, choices: [meraki, cli], default: meraki}
-  pam: {type: choice, choices: [delinea, beyondtrust], default: delinea}
   demo_failure: {type: string, default: none}
 steps:
   - phase: Prepare
@@ -24,16 +22,7 @@ steps:
       when: {device.role.name: edge-firewall}
   - Apply switch profile in Dashboard:
       job: meraki.ApplySwitchProfile
-      when: {device.role.name: office-switch, switch_management: meraki}
-  - Upgrade IOS-XE:
-      job: catalyst.UpgradeIosXe
-      rollback: catalyst.RollbackIosXe
-      when: {device.role.name: office-switch, switch_management: cli}
-      timeout: 1h
-  - Apply office profile:
-      job: catalyst.ApplyOfficeProfile
-      rollback: catalyst.RestoreBootstrapConfig
-      when: {device.role.name: office-switch, switch_management: cli}
+      when: {device.role.name: office-switch}
   - Upgrade OpenGear firmware:
       job: opengear.UpgradeFirmware
       when: {device.role.name: console-server}
@@ -49,10 +38,10 @@ steps:
       when: {device.role.name: [ups, pdu]}
 
   - phase: Local admin
-  - Create local admin in PAM: pam.CreateLocalAdmin
+  - Create local admin in BeyondTrust: pam.CreateLocalAdmin
   - Set local admin:
       job: pam.SetLocalAdmin
-      with: {secret_id: create_local_admin_in_pam.secret_id}
+      with: {secret_id: create_local_admin_in_beyondtrust.secret_id}
 
   - phase: Verify
   - Post-check:

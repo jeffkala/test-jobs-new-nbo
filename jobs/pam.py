@@ -1,6 +1,6 @@
 """Greenfield office ZTP, the local admin: generate the secret in the PAM, then set it on the device (10-21 00:21).
 
-The PAM is Delinea today; the target is open decision Z8. The secret never leaves the PAM: NBO sees its ID only.
+The PAM is BeyondTrust Password Safe (Z8). The secret never leaves the PAM: NBO sees its ID only.
 """
 
 from nautobot.apps.jobs import ObjectVar, StringVar, register_jobs
@@ -10,14 +10,13 @@ from .demo import DemoJob, stable, timing
 
 name = "NBO demo: ZTP PAM"  # pylint: disable=invalid-name
 
-PRODUCTS = {"delinea": "Delinea Secret Server", "beyondtrust": "BeyondTrust Password Safe"}
+PRODUCT = "BeyondTrust Password Safe"
 
 
 class CreateLocalAdmin(DemoJob):
     """Create the device's local admin account in the PAM, with a generated password. Opens a record outside NBO."""
 
     device = ObjectVar(model=Device)
-    pam = StringVar(default="delinea", description="delinea or beyondtrust: open decision Z8")
     min_seconds, max_seconds = timing(4, 10)
     failure = "pam-timeout"
 
@@ -27,21 +26,20 @@ class CreateLocalAdmin(DemoJob):
         name = "ZTP PAM: create local admin secret"
         description = "Create the device's local admin secret in the PAM. Opens a record outside NBO."
 
-    def run(self, device, pam, **common):  # pylint: disable=arguments-differ
+    def run(self, device, **common):  # pylint: disable=arguments-differ
         """Return {secret_id, account, vault}."""
-        product = PRODUCTS.get(pam, pam)
         self.failure_message = (
-            f"{product} timed out after the secret was submitted: check whether {device}'s secret exists, then "
+            f"{PRODUCT} timed out after the secret was submitted: check whether {device}'s secret exists, then "
             "Override secret_id and Mark done"
         )
         self.work(
-            f"Create {device}'s local admin in {product}",
+            f"Create {device}'s local admin in {PRODUCT}",
             **(common if device.role.name == "console-server" else {**common, "demo_failure": "none"}),
         )
         return {
-            "secret_id": f"{pam.upper()[:3]}-{stable('secret', device.name).randint(100000, 999999)}",
+            "secret_id": f"BT-{stable('secret', device.name).randint(100000, 999999)}",
             "account": "ztp-localadmin",
-            "vault": f"{product} / Network / {device.location.name}",
+            "vault": f"{PRODUCT} / Network / {device.location.name}",
         }
 
 

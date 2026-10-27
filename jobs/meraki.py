@@ -1,16 +1,21 @@
-"""Greenfield office ZTP, the Meraki lane: the Dashboard network, claiming, AP firmware and the wireless checks.
+"""Greenfield office ZTP, the Meraki lane: the Dashboard network, claiming, the switch's conversion, firmware, checks.
 
-The access points, and the Cisco 9300 if Meraki mode is confirmed (open decision Z2), are managed from the Meraki
-Dashboard. These jobs answer as its API would.
+The access points and the Cisco 9300, in Meraki mode (Z2), are managed from the Meraki Dashboard. Both are claimed into
+the office's network before install, so the switch finds its config when it calls home. These jobs answer as the
+Dashboard API would.
 """
 
 from nautobot.apps.jobs import ObjectVar, StringVar, register_jobs
 from nautobot.dcim.models import Device, Location
 
-from .demo import DemoJob, stable, times_asked, timing
-from .ztp import ACCESS_POINT, site_code
+from .demo import DemoFailure, DemoJob, stable, times_asked, timing
+from .ztp import ACCESS_POINT, OFFICE_DEVICES, site_code
 
 name = "NBO demo: ZTP Meraki"  # pylint: disable=invalid-name
+
+IOSXE_FACTORY, IOSXE_TARGET = next((row[5], row[6]) for row in OFFICE_DEVICES if row[4] == "cisco_ios")
+# The roles the Dashboard manages.
+MERAKI_ROLES = ("office-switch", "wireless-ap")
 
 
 def dashboard_network_id(location):
@@ -43,10 +48,9 @@ class PrepareNetwork(DemoJob):
 
 
 class ClaimDevices(DemoJob):
-    """Claim the APs, and the switch in Meraki mode, into the office's network by serial (10-21 00:51)."""
+    """Claim the 9300 stack and the APs into the office's network by serial, before install (10-27W 00:38)."""
 
     location = ObjectVar(model=Location)
-    switch_management = StringVar(default="meraki")
     network_id = StringVar()
     min_seconds, max_seconds = timing(5, 10)
 
@@ -56,13 +60,39 @@ class ClaimDevices(DemoJob):
         name = "ZTP Meraki: claim devices"
         description = "Claim the office's Meraki-managed devices into its network by serial. Safe to repeat."
 
-    def run(self, location, switch_management, network_id, **common):  # pylint: disable=arguments-differ
+    def run(self, location, network_id, **common):  # pylint: disable=arguments-differ
         """Return {claimed, claimed_count}."""
         self.work(f"Claim {location}'s devices into {network_id}", **common)
-        roles = ["wireless-ap"] + (["office-switch"] if switch_management == "meraki" else [])
-        devices = Device.objects.filter(location=location, role__name__in=roles).order_by("name")
+        devices = Device.objects.filter(location=location, role__name__in=MERAKI_ROLES).order_by("name")
         claimed = [{"device": d.name, "serial": d.serial, "network": network_id} for d in devices]
         return {"claimed": claimed, "claimed_count": len(claimed)}
+
+
+class SwitchConverted(DemoJob):
+    """A wait's check: done when the switch has converted to Meraki mode and called home to the Dashboard by serial."""
+
+    device = ObjectVar(model=Device)
+    min_seconds, max_seconds = timing(3, 8)
+    failure = "switch-not-converted"
+
+    class Meta:
+        """Meta."""
+
+        name = "ZTP Meraki: switch converted (check)"
+        description = "A wait's check: done when the switch shows in the Dashboard in Meraki mode."
+
+    def run(self, device, **common):  # pylint: disable=arguments-differ
+        """Fail when the switch ran its script but never reached the Dashboard: the person on site resets it."""
+        self.failure_message = (
+            f"{device} ({device.serial}) fetched its script but never called home to the Dashboard. Its IOS-XE may be "
+            "below the Meraki-mode minimum, or the conversion stalled. Have the person on site reset the switch to "
+            "factory, check it boots the IOS-XE on the purchase order, then Retry"
+        )
+        try:
+            self.work(f"Look for {device.serial} in the Dashboard", **common)
+        except DemoFailure as failure:
+            return self.check("Meraki mode", "failed", str(failure))
+        return self.check("Meraki mode", "done", f"{device} is online in the Dashboard, IOS-XE {IOSXE_FACTORY}")
 
 
 class DevicesOnline(DemoJob):
@@ -116,7 +146,7 @@ class ApplySwitchProfile(DemoJob):
 
 
 class UpgradeFirmware(DemoJob):
-    """Schedule the office's AP firmware upgrade in the Dashboard, and wait for it (MVP)."""
+    """Schedule the firmware upgrade of the office's switch and APs in the Dashboard, and wait for it (MVP)."""
 
     location = ObjectVar(model=Location)
     network_id = StringVar()
@@ -125,14 +155,20 @@ class UpgradeFirmware(DemoJob):
     class Meta:
         """Meta."""
 
-        name = "ZTP Meraki: upgrade AP firmware"
-        description = "Upgrade the office's access points to the approved MR firmware. Changes the network."
+        name = "ZTP Meraki: upgrade firmware"
+        description = "Upgrade the office's switch and access points to the approved firmware. Changes the network."
 
     def run(self, location, network_id, **common):  # pylint: disable=arguments-differ
-        """Return {firmware_from, firmware_to, upgraded}."""
-        self.work(f"Upgrade {network_id}'s APs to {ACCESS_POINT[5]}", **common)
-        upgraded = Device.objects.filter(location=location, role__name="wireless-ap").count()
-        return {"firmware_from": ACCESS_POINT[4], "firmware_to": ACCESS_POINT[5], "upgraded": upgraded}
+        """Return {upgrades, upgraded}."""
+        self.work(f"Upgrade {network_id}'s switch to {IOSXE_TARGET} and APs to {ACCESS_POINT[5]}", **common)
+        upgraded = Device.objects.filter(location=location, role__name__in=MERAKI_ROLES).count()
+        return {
+            "upgrades": [
+                {"devices": "9300 stack", "firmware_from": IOSXE_FACTORY, "firmware_to": IOSXE_TARGET},
+                {"devices": "access points", "firmware_from": ACCESS_POINT[4], "firmware_to": ACCESS_POINT[5]},
+            ],
+            "upgraded": upgraded,
+        }
 
 
 class ValidateWireless(DemoJob):
@@ -192,6 +228,7 @@ class SyncToNautobot(DemoJob):
 JOBS = (
     PrepareNetwork,
     ClaimDevices,
+    SwitchConverted,
     DevicesOnline,
     ApplySwitchProfile,
     UpgradeFirmware,

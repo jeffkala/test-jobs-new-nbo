@@ -60,13 +60,13 @@ OFFICE_DEVICES = (
     ("pdu", "pdu-01", "APC", "AP8841", "apc_nmc", "7.0.4", "7.1.4"),
 )
 ACCESS_POINT = ("wireless-ap", "Cisco Meraki", "CW9166I-MR", "meraki", "MR 30.6", "MR 31.1.5")
-# The devices the Palo's DHCP Option 67 bootstraps, from the ZTP file server (10-21 00:55–01:01).
+# The devices the Palo's DHCP Option 67 bootstraps, from the central ZTP file server (10-21 00:55–01:01).
 CALL_HOME_ROLES = ("office-switch", "console-server", "ups", "pdu")
 # Where each device's management address sits in the management VLAN.
 MGMT_HOSTS = {"fw-01": 4, "fw-02": 5, "sw-01": 10, "con-01": 11, "ups-01": 12, "pdu-01": 13}
 FIRST_AP_HOST = 20
-# The temporary bootstrap port map (HLD §7 Phase 2).
-BOOTSTRAP_PORT_MAP = (
+# The port map (HLD §7 Phase 2). It is the permanent design: only VLAN 1 on the switch is temporary (10-27W 00:42).
+PORT_MAP = (
     ("sw-01", "GigabitEthernet1/0/1", "ISP", "DIA handoff (primary)"),
     ("sw-01", "GigabitEthernet1/0/2", "fw-01", "ethernet1/1 (WAN)"),
     ("sw-01", "GigabitEthernet1/0/3", "fw-01", "ethernet1/2 (LAN)"),
@@ -75,13 +75,8 @@ BOOTSTRAP_PORT_MAP = (
     ("fw-01", "HA1/HA2", "fw-02", "HA1/HA2"),
 )
 POWER_ON_ORDER = ("sw-01", "fw-01", "fw-02", "con-01")
-# Where each file server option serves the bootstrap files from (open decision Z3).
-FILE_SERVERS = {
-    "central": "https://ztp.corp.example.com/offices/{site}/",
-    "nautobot": "https://nautobot.example.com/api/plugins/ztp/files/{site}/?serial=",
-    "opengear": "http://{opengear}/ztp/",
-    "aws": "https://ztp-{site}.s3.us-west-2.amazonaws.com/",
-}
+# The central ZTP file server the Option 67 URL points at, reached through the Palo's VPN (Z3). Its host is open.
+FILE_SERVER = "https://ztp.corp.example.com/offices/{site}/"
 
 
 def site_code(location):
@@ -358,7 +353,7 @@ class CreateOfficeRecords(DemoJob):
                     "to": f"{site}-{b}" if b != "ISP" else b,
                     "far_end": far,
                 }
-                for a, port, b, far in BOOTSTRAP_PORT_MAP
+                for a, port, b, far in PORT_MAP
             ],
             "power_on_order": [f"{site}-{suffix}" for suffix in POWER_ON_ORDER],
         }
@@ -369,7 +364,6 @@ class SelectTargets(DemoJob):
 
     location = ObjectVar(model=Location)
     office_type = StringVar(default="normal")
-    switch_management = StringVar(default="meraki", description="meraki or cli: open decision Z2")
     min_seconds, max_seconds = timing(3, 6)
 
     class Meta:
@@ -378,10 +372,11 @@ class SelectTargets(DemoJob):
         name = "ZTP: select profile, firmware and templates"
         description = "Select the normal or EBC profile, the approved firmware per platform, and the templates."
 
-    def run(self, location, office_type, switch_management, **common):  # pylint: disable=arguments-differ
+    def run(self, location, office_type, **common):  # pylint: disable=arguments-differ
         """Return {profile, firmware, templates}."""
         self.work(f"Select {office_type} targets for {location}", **common)
-        upgraded_by = {"paloalto_panos": "Panorama", "meraki": "Meraki Dashboard"}
+        # The 9300 runs in Meraki mode (Z2), so the Dashboard upgrades it like the APs.
+        upgraded_by = {"paloalto_panos": "Panorama", "meraki": "Meraki Dashboard", "cisco_ios": "Meraki Dashboard"}
         firmware, seen = [], set()
         for _, _, _, model, platform_name, factory, target in (
             *OFFICE_DEVICES,
@@ -397,9 +392,6 @@ class SelectTargets(DemoJob):
                         "upgraded_by": upgraded_by.get(platform_name, "Nautobot"),
                     }
                 )
-        if switch_management == "meraki":
-            switch = next(row for row in firmware if row["model"].startswith("C9300"))
-            switch.update({"target": f"{switch['target']} (Meraki managed)", "upgraded_by": "Meraki Dashboard"})
         return {
             "profile": office_type,
             "firmware": firmware,
@@ -407,18 +399,21 @@ class SelectTargets(DemoJob):
                 "panorama_template_stack": f"TS-OFFICE-{office_type.upper()}",
                 "panorama_device_group": f"DG-{location.name.upper()}",
                 "meraki_template": f"Office-{office_type.upper()}",
-                "switch_profile": f"c9300-{office_type}-{switch_management}",
+                "switch_template": f"MS-Office-{office_type.upper()}",
             },
         }
 
 
 class GenerateBootstrapArtifacts(DemoJob):
-    """Render, version and checksum every bootstrap file: Palo init-cfg, Cisco script, OpenGear and APC configs."""
+    """Render, version and checksum every bootstrap file: the Palo USB base config, Cisco script, OpenGear and APC.
+
+    The Palo's base config carries its VPN tunnels, so it reaches Panorama internally (Z11). How the tunnels' keys get
+    onto the drive without a secret in clear text is open (Z13): here they are BeyondTrust references.
+    """
 
     location = ObjectVar(model=Location)
-    palo_bootstrap = StringVar(default="usb", description="usb or panorama-ztp: open decision Z1")
-    switch_management = StringVar(default="meraki")
     addresses = JSONVar()
+    tunnels = JSONVar(required=False, description="The office's VPN tunnels, from the Panorama pre-work")
     min_seconds, max_seconds = timing(5, 12)
 
     class Meta:
@@ -427,30 +422,34 @@ class GenerateBootstrapArtifacts(DemoJob):
         name = "ZTP: generate bootstrap artifacts"
         description = "Render each device's bootstrap file, versioned and checksummed, with secrets as PAM references."
 
-    def run(self, location, palo_bootstrap, switch_management, addresses, **common):  # pylint: disable=arguments-differ,too-many-arguments
+    def run(self, location, addresses, tunnels, **common):  # pylint: disable=arguments-differ
         """Return {artifact_version, artifacts, secrets_in_clear}."""
         self.work(f"Render {location}'s bootstrap artifacts", **common)
         site = site_code(location)
-        version = f"{site}-v{stable('artifacts', site, palo_bootstrap, switch_management).randint(100, 999)}"
+        version = f"{site}-v{stable('artifacts', site).randint(100, 999)}"
         files = []
         for suffix in ("fw-01", "fw-02"):
             ip = addresses.get(suffix, "")
-            body = (
+            init_cfg = (
                 f"type=static\nip-address={ip.split('/')[0]}\nhostname={site}-{suffix}\n"
                 f"panorama-server=panorama.corp.example.com\ntplname=TS-{site.upper()}\ndgname=DG-{site.upper()}\n"
-                "vm-auth-key=pam://delinea/ztp/panorama-auth-key\n"
+                "vm-auth-key=pam://beyondtrust/ztp/panorama-auth-key\n"
             )
-            files.append(
-                (
-                    f"{site}-{suffix}",
-                    "config/init-cfg.txt",
-                    body,
-                    "USB" if palo_bootstrap == "usb" else "Palo ZTP service",
-                )
+            base_config = "".join(
+                f"<tunnel name='{tunnel['tunnel']}' peer='{tunnel['peer']}' psk='pam://beyondtrust/ztp/{site}-vpn'/>\n"
+                for tunnel in tunnels or []
             )
-        script = "meraki-mode conversion" if switch_management == "meraki" else "day-0 CLI"
+            files += [
+                (f"{site}-{suffix}", "config/init-cfg.txt", init_cfg, "USB"),
+                (f"{site}-{suffix}", "config/bootstrap.xml", f"<!-- static WAN, mgmt -->\n{base_config}", "USB"),
+            ]
         files += [
-            (f"{site}-sw-01", "ztp/c9300.py", f"# {version}: {script}, then call home by serial\n", "Option 67"),
+            (
+                f"{site}-sw-01",
+                "ztp/c9300.py",
+                f"# {version}: convert to Meraki mode, call home by serial\n",
+                "Option 67",
+            ),
             (f"{site}-con-01", "ztp/opengear.sh", f"# {version}: ops VLAN 100, console port map\n", "Option 67"),
             (f"{site}-ups-01", "ztp/apc-ups.ini", f"; {version}: SNMPv3, syslog, NTP\n", "Option 67"),
             (f"{site}-pdu-01", "ztp/apc-pdu.ini", f"; {version}: SNMPv3, syslog, NTP\n", "Option 67"),
@@ -463,27 +462,22 @@ class GenerateBootstrapArtifacts(DemoJob):
 
 
 class PublishBootstrapFiles(DemoJob):
-    """Publish the artifacts on the ZTP file server the Palo's Option 67 points at (open decision Z3)."""
+    """Publish the Option 67 files on the central ZTP file server (Z3); the Palo's files go on USB instead."""
 
     location = ObjectVar(model=Location)
-    file_server = StringVar(default="central", description="central, nautobot, opengear or aws")
     artifact_version = StringVar()
-    addresses = JSONVar()
     min_seconds, max_seconds = timing(3, 8)
 
     class Meta:
         """Meta."""
 
         name = "ZTP: publish bootstrap files"
-        description = "Publish the bootstrap files on the ZTP file server and return the Option 67 URL."
+        description = "Publish the bootstrap files on the central ZTP file server and return the Option 67 URL."
 
-    def run(self, location, file_server, artifact_version, addresses, **common):  # pylint: disable=arguments-differ,too-many-arguments
-        """Return {option67_url, file_server, published}."""
-        self.work(f"Publish {artifact_version} to the {file_server} file server", **common)
-        url = FILE_SERVERS[file_server].format(
-            site=site_code(location), opengear=addresses.get("con-01", "").split("/")[0]
-        )
-        return {"option67_url": url, "file_server": file_server, "published": artifact_version}
+    def run(self, location, artifact_version, **common):  # pylint: disable=arguments-differ
+        """Return {option67_url, published}."""
+        self.work(f"Publish {artifact_version} to the central file server", **common)
+        return {"option67_url": FILE_SERVER.format(site=site_code(location)), "published": artifact_version}
 
 
 class ConfirmSiteReadiness(DemoJob):
@@ -493,6 +487,11 @@ class ConfirmSiteReadiness(DemoJob):
     mdf_ready = BooleanVar(default=False, label="MDF ready", description="Room, rack, power and cooling are in")
     patching_done = BooleanVar(default=False, label="Patching done", description="Structured cabling is terminated")
     devices_on_site = BooleanVar(default=False, label="Devices on site", description="Every box of the BOM is there")
+    switch_iosxe = BooleanVar(
+        default=False,
+        label="Switch IOS-XE as ordered",
+        description="The 9300s ship with the minimum IOS-XE on the purchase order: Meraki mode needs it (Z10)",
+    )
     notes = StringVar(required=False, default="")
     min_seconds, max_seconds = timing(1, 2)
 
@@ -500,12 +499,20 @@ class ConfirmSiteReadiness(DemoJob):
         """Meta."""
 
         name = "ZTP: confirm site readiness"
-        description = "Confirm the MDF, the patching and the delivered devices. Started by a person, with the form."
+        description = (
+            "Confirm the MDF, the patching, the delivered devices and the switch IOS-XE. Started by a person, with the "
+            "form."
+        )
 
-    def run(self, location, mdf_ready, patching_done, devices_on_site, notes, **common):  # pylint: disable=arguments-differ,too-many-arguments
+    def run(self, location, mdf_ready, patching_done, devices_on_site, switch_iosxe, notes, **common):  # pylint: disable=arguments-differ,too-many-arguments
         """Return the checklist; fail on anything unticked: MDF is a hard prerequisite (HLD §11)."""
         self.work(f"Record {location}'s readiness checklist", **common)
-        checklist = {"MDF ready": mdf_ready, "Patching done": patching_done, "Devices on site": devices_on_site}
+        checklist = {
+            "MDF ready": mdf_ready,
+            "Patching done": patching_done,
+            "Devices on site": devices_on_site,
+            "Switch IOS-XE as ordered": switch_iosxe,
+        }
         missing = [item for item, ticked in checklist.items() if not ticked]
         if missing:
             raise DemoFailure(
@@ -688,7 +695,7 @@ class ReconcileSite(DemoJob):
 
 
 class RetireBootstrap(DemoJob):
-    """Take the bootstrap path down: Option 67 off, the VLAN 1 bridge removed, the files unpublished (HLD §16)."""
+    """Take the bootstrap path down: Option 67 off, VLAN 1 replaced, the files unpublished (HLD §10.1, §16)."""
 
     location = ObjectVar(model=Location)
     artifact_version = StringVar(required=False, default="")
@@ -699,7 +706,8 @@ class RetireBootstrap(DemoJob):
 
         name = "ZTP: retire bootstrap"
         description = (
-            "Turn Option 67 off on the Palo, remove the VLAN 1 path, unpublish the files. Changes the network."
+            "Turn Option 67 off on the Palo through Panorama, check the switch profile replaced VLAN 1, unpublish the "
+            "files. Changes the network."
         )
 
     def run(self, location, artifact_version, **common):  # pylint: disable=arguments-differ
@@ -708,12 +716,45 @@ class RetireBootstrap(DemoJob):
         return {
             "retired": [
                 {"what": "DHCP Option 67 on ethernet1/2", "where": "Panorama template", "state": "removed"},
-                {"what": "VLAN 1 ISP bridge", "where": f"{site_code(location)}-sw-01", "state": "removed"},
+                {
+                    "what": "VLAN 1 ISP bridge",
+                    "where": f"{site_code(location)}-sw-01, Dashboard switch profile",
+                    "state": "replaced",
+                },
                 {
                     "what": f"Bootstrap files {artifact_version or ''}".strip(),
                     "where": "ZTP file server",
                     "state": "unpublished",
                 },
+            ]
+        }
+
+
+class RecordMediaCustody(DemoJob):
+    """The installer's report: the USB drives are out of the Palos, and who holds them now (HLD §3, §10.1)."""
+
+    location = ObjectVar(model=Location)
+    drives_removed = BooleanVar(default=False, label="USB drives removed", description="Out of both firewalls")
+    custody = StringVar(default="", label="Held by", description="Who holds the drives now, such as Network Eng SJC")
+    min_seconds, max_seconds = timing(1, 2)
+
+    class Meta:
+        """Meta."""
+
+        name = "ZTP: record bootstrap media custody"
+        description = "Record the USB drives removed from the firewalls and who holds them. Started by the installer."
+
+    def run(self, location, drives_removed, custody, **common):  # pylint: disable=arguments-differ
+        """Return {custody}; fail while a drive is in a firewall or nobody holds them."""
+        self.work(f"Record the custody of {location}'s bootstrap drives", **common)
+        if not (drives_removed and custody):
+            raise DemoFailure(
+                "The bootstrap drives must be out of the firewalls and held by someone: Retry with changes once done"
+            )
+        return {
+            "custody": [
+                {"drive": f"{site_code(location)}-{suffix} bootstrap", "removed": True, "held_by": custody}
+                for suffix in ("fw-01", "fw-02")
             ]
         }
 
@@ -782,7 +823,7 @@ class ReadinessGate(SiteGate):
         """Meta."""
 
         name = "ZTP gate: ready for install (check)"
-        description = "A wait's check: the office's prefixes, devices, serials and port map are in Nautobot."
+        description = "A wait's check: the office's prefixes, devices and serials are in Nautobot."
 
     def checks(self, location):
         """The records the plan needs."""
@@ -839,7 +880,7 @@ class PlatformGate(SiteGate):
         """What the platforms report."""
         del location  # Panorama and the Dashboard report it, not Nautobot
         yield "Panorama: both firewalls connected, HA formed", True
-        yield "Meraki Dashboard: every AP online", True
+        yield "Meraki Dashboard: the 9300 stack and every AP online", True
 
 
 class ConfigurationGate(SiteGate):
@@ -870,7 +911,8 @@ class ValidationGate(SiteGate):
     def checks(self, location):
         """The operational checks."""
         yield "prefixes Active in IPAM", Prefix.objects.filter(locations=location, type="network").exists()
-        yield "Option 67 off, VLAN 1 path removed", True
+        yield "Option 67 off, VLAN 1 replaced by the switch profile", True
+        yield "USB drives removed, custody recorded", True
         yield "Datadog polling, backups enrolled", True
 
 
@@ -892,6 +934,7 @@ JOBS = (
     UpdateDnsAndIpam,
     ReconcileSite,
     RetireBootstrap,
+    RecordMediaCustody,
     CommissionSite,
     ReadinessGate,
     PhysicalGate,

@@ -1,9 +1,9 @@
 name: ztp-greenfield-office
 description: >-
   Turn up a greenfield office with zero touch, from an empty location to a commissioned site: plan and allocate in
-  Nautobot, install on site, bootstrap the Palo first and everything else from its DHCP, onboard the platforms,
-  upgrade and configure every device, validate, retire the bootstrap and hand the site over. Each phase ends at a
-  gate that records its evidence, and the open design decisions are choices on the start form.
+  Nautobot, install on site with the Palo's USB drive in, bootstrap the Palo first over its VPN and everything else
+  from its DHCP, onboard the platforms, upgrade and configure every device, validate, retire the bootstrap and hand
+  the site over. Each phase ends at a gate that records its evidence.
 for: location
 lifecycle:
   - Planned
@@ -28,25 +28,6 @@ inputs:
     default: normal
     help: "The profile, not the workflow, changes: EBC adds the AV VLAN, multicast and QoS"
   ap_count: {type: integer, label: "Access points", default: 6, min: 1, max: 40}
-  palo_bootstrap:
-    type: choice
-    label: "Z1: Palo bootstrap"
-    choices: [usb, panorama-ztp]
-    default: usb
-    help: "USB: an operator burns the file Nautobot renders. Palo ZTP service: needs a Security sign-off"
-  switch_management:
-    type: choice
-    label: "Z2: Cisco 9300 managed by"
-    choices: [meraki, cli]
-    default: meraki
-    help: "Meraki mode is pending the lab test; CLI has Nautobot upgrade and configure the stack"
-  file_server:
-    type: choice
-    label: "Z3: ZTP file server"
-    choices: [central, nautobot, opengear, aws]
-    default: central
-    help: "Where the Option 67 URL points"
-  pam: {type: choice, label: "Z8: PAM", choices: [delinea, beyondtrust], default: delinea}
   ap_walkthrough:
     type: boolean
     label: "AP walkthrough"
@@ -60,7 +41,7 @@ inputs:
       - none
       - usb-not-read
       - identity-mismatch
-      - iosxe-too-old
+      - switch-not-converted
       - ha-join-fails
       - apc-upgrade-flaky
       - pam-timeout
@@ -77,58 +58,71 @@ steps:
       job: ztp.CreateOfficeRecords
       with: {addresses: allocate_office_addressing.addresses}
   - Select profile and firmware: ztp.SelectTargets
-  - Generate bootstrap artifacts:
-      job: ztp.GenerateBootstrapArtifacts
-      with: {addresses: allocate_office_addressing.addresses}
-  - Publish bootstrap files:
-      job: ztp.PublishBootstrapFiles
-      with:
-        artifact_version: generate_bootstrap_artifacts.artifact_version
-        addresses: allocate_office_addressing.addresses
   - Request DNS records:
       job: itsm.RequestDnsRecords
       after: [Create office records]
   - Request cloud onboarding:
       job: itsm.RequestCloudOnboarding
       after: [Create office records]
+  - Pre-site tickets resolved:
+      wait: itsm.TicketsResolved
+      with: {dns_ticket: request_dns_records.dns_ticket, jira_key: request_cloud_onboarding.jira_key}
+      after: [Request DNS records, Request cloud onboarding]
+      timeout: 10d
+  - Raise corporate connection change:
+      description: >-
+        The Palo's USB base config brings its VPN tunnels up at bootstrap, which connects the office to the corporate
+        network, so the change is approved before anyone goes to site.
+      job: itsm.RaiseChange
+      after: [Create office records]
+  - Corporate connection change approved:
+      description: ServiceNow calls back when the CAB decides; a rejection fails the step and nothing is installed.
+      wait: callback
+      with: {change: raise_corporate_connection_change.change_number}
+      timeout: 5d
   - Prepare Panorama:
       job: panorama.PrepareOffice
       after: [Create office records]
   - Prepare Meraki network:
       job: meraki.PrepareNetwork
       after: [Create office records]
-  - Security sign-off for cloud bootstrap:
-      approve: security-architects
+  - Claim Meraki devices:
       description: >-
-        The Palo ZTP service needs the Panorama ZTP plugin and Panorama reachable from the internet while the
-        firewalls bootstrap. Approve the temporary exposure, or reject to bootstrap from USB instead.
-      when: {palo_bootstrap: panorama-ztp}
-      after: [Create office records]
-      timeout: 5d
-  - Register firewalls for cloud ZTP:
-      job: panorama.RegisterZtpSerials
-      when: {palo_bootstrap: panorama-ztp}
-  - Pre-site tickets resolved:
-      wait: itsm.TicketsResolved
-      with: {dns_ticket: request_dns_records.dns_ticket, jira_key: request_cloud_onboarding.jira_key}
-      after: [Request DNS records, Request cloud onboarding]
-      timeout: 10d
+        Claim the 9300 stack and the APs into the office's network by serial before install, so the switch has its
+        config to pull when it calls home.
+      job: meraki.ClaimDevices
+      with: {network_id: prepare_meraki_network.network_id}
+  - Generate bootstrap artifacts:
+      job: ztp.GenerateBootstrapArtifacts
+      with: {addresses: allocate_office_addressing.addresses, tunnels: prepare_panorama.tunnels}
+      after: [Select profile and firmware, Prepare Panorama]
+  - Publish bootstrap files:
+      job: ztp.PublishBootstrapFiles
+      with: {artifact_version: generate_bootstrap_artifacts.artifact_version}
+  - Write the USB drives:
+      manual: site-operators
+      description: >-
+        Download each firewall's bootstrap from Nautobot, check its SHA-256, and write it to a FAT32 USB drive under
+        config/. Label each drive with its firewall's name and hand them to the installer.
+      with: {artifacts: generate_bootstrap_artifacts.artifacts}
+      after: [Generate bootstrap artifacts]
   - Confirm site readiness:
       job: ztp.ConfirmSiteReadiness
       manual: network-engineering
       description: >-
-        MDF and patching are a hard prerequisite before any device work. Tick what you have confirmed with the site;
-        anything unticked fails the step, and Retry with changes records it once it's done.
+        MDF and patching are a hard prerequisite before any device work, and the 9300s must ship with the IOS-XE the
+        purchase order asks for: nothing can upgrade them before they convert. Tick what you have confirmed; anything
+        unticked fails the step, and Retry with changes records it once it's done.
       after: [Create office records]
   - Ready-for-install gate:
       wait: ztp.ReadinessGate
       after:
         - Publish bootstrap files
+        - Write the USB drives
         - Pre-site tickets resolved
+        - Corporate connection change approved
         - Confirm site readiness
-        - Prepare Panorama
-        - Prepare Meraki network
-        - Register firewalls for cloud ZTP
+        - Claim Meraki devices
       timeout: 1h
   - Mark ready for install:
       job: ztp.SetSiteLifecycle
@@ -145,8 +139,10 @@ steps:
   - Rack, power and cable:
       manual: field-ops
       description: >-
-        Rack and stack per the layout, cable to the temporary bootstrap port map below, and power on in order: the
-        9300 first, then the Palo pair, then the OpenGear. Don't configure anything: the devices bootstrap themselves.
+        Rack and stack per the layout and cable to the port map below: it is the permanent design, nothing is
+        re-cabled later. Insert each labelled USB drive into its Palo before powering it on, then power on in order:
+        the 9300 first, then the Palo pair, then the OpenGear. Don't configure anything: the devices bootstrap
+        themselves.
       with:
         rack_layout: create_office_records.rack_layout
         port_map: create_office_records.port_map
@@ -168,20 +164,25 @@ steps:
   - Bootstrap firewalls:
       description: >-
         The Palo comes up first: every other device depends on its DHCP. The 9300's factory VLAN 1 bridges the ISP
-        to the Palo's WAN. The active firewall bootstraps, then the passive one.
+        to the Palo's WAN; the Palo reads its USB drive at first boot, brings its VPN tunnels up and connects to
+        Panorama over them. The active firewall bootstraps, then the passive one.
       for_each: create_office_records.firewalls
       workflow: ztp-firewall-bootstrap
       with: {artifact_version: generate_bootstrap_artifacts.artifact_version}
       waves: 1
-  - Serve DHCP option 67:
+  - Enable LAN routes and option 67:
+      description: >-
+        Only once the Palo is up and stable: when the 9300 converts it reloads, and the Palo's path drops until the
+        switch is back.
       job: panorama.ServeOption67
       with:
         option67_url: publish_bootstrap_files.option67_url
         template_stack: prepare_panorama.template_stack
   - Bootstrap from option 67:
       description: >-
-        The switch, the OpenGear and the APC cards each take DHCP from the Palo, fetch their file from the Option 67
-        URL by serial, and the file server calls back. Nautobot checks each one is the box it planned.
+        The switch, the OpenGear and the APC cards each take DHCP from the Palo, fetch their file from the central
+        file server by serial, and the file server calls back. Nautobot checks each one is the box it planned; the
+        switch converts to Meraki mode and pulls the rest of its config from the Dashboard.
       for_each: create_office_records.infrastructure
       workflow: ztp-call-home
       with: {artifact_version: generate_bootstrap_artifacts.artifact_version}
@@ -198,13 +199,10 @@ steps:
       job: panorama.FormHaPair
       rollback: panorama.BreakHaPair
       timeout: 30m
-  - Claim Meraki devices:
-      job: meraki.ClaimDevices
-      with: {network_id: prepare_meraki_network.network_id}
-      after: [Mark bootstrapped]
   - Meraki devices online:
       wait: meraki.DevicesOnline
       with: {network_id: prepare_meraki_network.network_id}
+      after: [Mark bootstrapped]
       timeout: 2h
   - Platform-connected gate:
       wait: ztp.PlatformGate
@@ -221,39 +219,25 @@ steps:
       workflow: ztp-device-build
       waves: 1
   - Configure infrastructure:
-      description: Upgrade and configure the switch, the OpenGear and the APC cards, all at once.
+      description: >-
+        Apply the switch profile from the Dashboard, and upgrade and configure the OpenGear and the APC cards, all at
+        once.
       for_each: create_office_records.infrastructure
       workflow: ztp-device-build
       after: [Mark platform connected]
-  - Upgrade AP firmware:
+  - Upgrade Meraki firmware:
       job: meraki.UpgradeFirmware
       with: {network_id: prepare_meraki_network.network_id}
       after: [Mark platform connected]
-  - Raise corporate connection change:
-      job: itsm.RaiseChange
-      after: [Mark platform connected]
   - Fully-configured gate:
       wait: ztp.ConfigurationGate
-      after: [Configure firewalls, Configure infrastructure, Upgrade AP firmware]
+      after: [Configure firewalls, Configure infrastructure, Upgrade Meraki firmware]
       timeout: 1h
   - Mark fully configured:
       job: ztp.SetSiteLifecycle
       with: {stage: 5}
 
   - phase: Validate
-  - CAB approved:
-      description: >-
-        Connecting the office to the corporate network needs its own change. ServiceNow calls back when the CAB
-        decides; a rejection fails the step and nothing is connected.
-      wait: callback
-      with: {change: raise_corporate_connection_change.change_number}
-      after: [Raise corporate connection change]
-      timeout: 5d
-  - Connect to corporate network:
-      job: panorama.EnableCorporateTunnels
-      rollback: panorama.DisableCorporateTunnels
-      with: {change_number: raise_corporate_connection_change.change_number}
-      after: [CAB approved, Mark fully configured]
   - Validate firewalls:
       wait: panorama.ValidateFirewalls
       timeout: 1h
@@ -282,6 +266,11 @@ steps:
   - Retire bootstrap:
       job: ztp.RetireBootstrap
       with: {artifact_version: generate_bootstrap_artifacts.artifact_version}
+  - Remove the USB drives:
+      job: ztp.RecordMediaCustody
+      manual: field-ops
+      description: Take the USB drive out of each Palo and record who holds the drives now.
+      after: [Retire bootstrap]
   - Validated gate:
       wait: ztp.ValidationGate
       timeout: 1h

@@ -305,19 +305,19 @@ ztp.CreateOfficeRecords:
   effect: idempotent
   gives: {firewalls: list, infrastructure: list, access_points: list, inventory: list, device_count: integer, circuits: list, circuit_id: string, rack_layout: list, port_map: list, power_on_order: list}
 ztp.SelectTargets:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type, switch_management]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type]
   effect: read
   gives: {profile: string, firmware: list, templates: json}
 ztp.GenerateBootstrapArtifacts:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, palo_bootstrap, switch_management, addresses]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, addresses, tunnels]
   effect: idempotent
   gives: {artifact_version: string, artifacts: list, secrets_in_clear: integer}
 ztp.PublishBootstrapFiles:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, file_server, artifact_version, addresses]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, artifact_version]
   effect: idempotent
-  gives: {option67_url: string, file_server: string, published: string}
+  gives: {option67_url: string, published: string}
 ztp.ConfirmSiteReadiness:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, mdf_ready, patching_done, devices_on_site, notes]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, mdf_ready, patching_done, devices_on_site, switch_iosxe, notes]
   effect: idempotent
   gives: {checklist: list, notes: string}
 ztp.RecordFieldTests:
@@ -348,6 +348,10 @@ ztp.RetireBootstrap:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, artifact_version]
   effect: changes_network
   gives: {retired: list}
+ztp.RecordMediaCustody:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, drives_removed, custody]
+  effect: idempotent
+  gives: {custody: list}
 ztp.CommissionSite:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
   effect: idempotent
@@ -380,17 +384,13 @@ panorama.PrepareOffice:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type]
   effect: idempotent
   gives: {device_group: string, template_stack: string, templates: list, tunnels: list}
-panorama.RegisterZtpSerials:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
-  effect: opens_external
-  gives: {registered: list}
 panorama.DeviceConnected:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, palo_bootstrap]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
   effect: read
 panorama.ServeOption67:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, option67_url, template_stack]
   effect: changes_network
-  gives: {dhcp_config: list, commit_id: string}
+  gives: {lan_routes: list, dhcp_config: list, commit_id: string}
 panorama.ActivateLicences:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
   effect: idempotent
@@ -415,14 +415,6 @@ panorama.PushTemplates:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
   effect: changes_network
   gives: {commit_id: string, pushed: list}
-panorama.EnableCorporateTunnels:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, change_number]
-  effect: changes_network
-  gives: {tunnels_enabled: list}
-panorama.DisableCorporateTunnels:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
-  effect: idempotent
-  gives: {tunnels_disabled: boolean}
 panorama.ValidateFirewalls:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
   effect: read
@@ -432,9 +424,12 @@ meraki.PrepareNetwork:
   effect: idempotent
   gives: {network_id: string, network_name: string, template: string, rf_profile: string}
 meraki.ClaimDevices:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, switch_management, network_id]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
   effect: idempotent
   gives: {claimed: list, claimed_count: integer}
+meraki.SwitchConverted:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
 meraki.DevicesOnline:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
   effect: read
@@ -445,7 +440,7 @@ meraki.ApplySwitchProfile:
 meraki.UpgradeFirmware:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
   effect: changes_network
-  gives: {firmware_from: string, firmware_to: string, upgraded: integer}
+  gives: {upgrades: list, upgraded: integer}
 meraki.ValidateWireless:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
   effect: read
@@ -454,26 +449,6 @@ meraki.SyncToNautobot:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
   effect: idempotent
   gives: {synced: list}
-catalyst.CheckMerakiMode:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
-  effect: read
-  gives: {factory_version: string, minimum: string, needs_upgrade: boolean}
-catalyst.UpgradeIosXe:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
-  effect: changes_network
-  gives: {iosxe_to: string, stack_members: integer}
-catalyst.RollbackIosXe:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
-  effect: idempotent
-  gives: {rolled_back: boolean}
-catalyst.ApplyOfficeProfile:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, office_type]
-  effect: changes_network
-  gives: {config_lines: integer, sections: list}
-catalyst.RestoreBootstrapConfig:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
-  effect: idempotent
-  gives: {restored: string}
 opengear.UpgradeFirmware:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
   effect: changes_network
@@ -491,7 +466,7 @@ apc.Configure:
   effect: changes_network
   gives: {settings: list}
 pam.CreateLocalAdmin:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, pam]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
   effect: opens_external
   gives: {secret_id: string, account: string, vault: string}
 pam.SetLocalAdmin:

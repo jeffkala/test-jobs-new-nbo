@@ -1,7 +1,8 @@
 """Greenfield office ZTP, the Palo Alto lane: Panorama pre-work, bootstrap, licensing, HA, upgrade and validation.
 
-Panorama is authoritative for the Palo's config once it has bootstrapped (HLD §5.1): these jobs answer as its XML API
-would. The PA-3220 pair is `fw-01` (active) and `fw-02` (passive).
+The Palo bootstraps from a USB drive whose base config carries the VPN tunnels, and reaches Panorama over them: Panorama
+isn't exposed to the internet (Z1, Z11). Panorama is authoritative for the Palo's config from then on (HLD §5.1): these
+jobs answer as its XML API would. The PA-3220 pair is `fw-01` (active) and `fw-02` (passive).
 """
 
 from nautobot.apps.jobs import ObjectVar, StringVar, register_jobs
@@ -17,7 +18,10 @@ PANOS_FACTORY = next(row[5] for row in OFFICE_DEVICES if row[4] == "paloalto_pan
 
 
 class PrepareOffice(DemoJob):
-    """Panorama pre-work: the office's device group, template stack, address objects and DC tunnels (10-21 00:10)."""
+    """Panorama pre-work: the office's device group, template stack, address objects and DC tunnels (10-21 00:10).
+
+    The tunnels go into the firewalls' USB base config, so they come up at bootstrap.
+    """
 
     location = ObjectVar(model=Location)
     office_type = StringVar(default="normal")
@@ -47,30 +51,10 @@ class PrepareOffice(DemoJob):
         }
 
 
-class RegisterZtpSerials(DemoJob):
-    """Register the firewalls' serials with the Palo Alto ZTP service, for the cloud bootstrap (Z1). Opens records."""
-
-    location = ObjectVar(model=Location)
-    min_seconds, max_seconds = timing(6, 12)
-
-    class Meta:
-        """Meta."""
-
-        name = "ZTP Panorama: register serials for cloud ZTP"
-        description = "Register the firewall serials in the Palo Alto ZTP service. Opens a record outside NBO."
-
-    def run(self, location, **common):  # pylint: disable=arguments-differ
-        """Return {registered}."""
-        self.work(f"Register {location}'s firewalls with the ZTP service", **common)
-        firewalls = Device.objects.filter(location=location, role__name="edge-firewall").order_by("name")
-        return {"registered": [{"device": fw.name, "serial": fw.serial, "state": "Registered"} for fw in firewalls]}
-
-
 class DeviceConnected(DemoJob):
-    """A wait's check: done when Panorama shows the firewall connected, with its bootstrap config loaded."""
+    """A wait's check: done when Panorama shows the firewall connected over the VPN, with its base config loaded."""
 
     device = ObjectVar(model=Device)
-    palo_bootstrap = StringVar(default="usb")
     min_seconds, max_seconds = timing(3, 8)
     failure = "usb-not-read"
 
@@ -80,30 +64,31 @@ class DeviceConnected(DemoJob):
         name = "ZTP Panorama: device connected (check)"
         description = "A wait's check: done when Panorama shows the firewall connected."
 
-    def run(self, device, palo_bootstrap, **common):  # pylint: disable=arguments-differ
+    def run(self, device, **common):  # pylint: disable=arguments-differ
         """Fail when the active firewall booted its factory config: the USB wasn't read."""
         self.failure_message = (
             f"{device} booted its factory config: the bootstrap USB wasn't read. It must be FAT32 with "
-            "config/init-cfg.txt at its root. Re-burn it, power-cycle the firewall, then Retry"
+            "config/init-cfg.txt and config/bootstrap.xml. Rewrite it, power-cycle the firewall with it in, then Retry"
         )
         try:
             self.work(
                 f"Ask Panorama about {device.serial}",
-                **(
-                    common
-                    if device.name.endswith("fw-01") and palo_bootstrap == "usb"
-                    else {**common, "demo_failure": "none"}
-                ),
+                **(common if device.name.endswith("fw-01") else {**common, "demo_failure": "none"}),
             )
         except DemoFailure as failure:
             return self.check("Panorama connection", "failed", str(failure))
         return self.check(
-            "Panorama connection", "done", f"{device} ({device.serial}) is connected, PAN-OS {PANOS_FACTORY}"
+            "Panorama connection",
+            "done",
+            f"{device} ({device.serial}) is connected over the VPN, PAN-OS {PANOS_FACTORY}",
         )
 
 
 class ServeOption67(DemoJob):
-    """Turn on the Palo's LAN DHCP with Option 67 pointing at the ZTP file server: "DHCP 100% Palo" (10-21 00:59)."""
+    """Turn on the Palo's LAN routes and DHCP with Option 67 at the central file server: "DHCP 100% Palo" (10-21 00:59).
+
+    They come last, once the Palo is stable (10-27W 00:57). How to stage that in Panorama's templates is open (Z12).
+    """
 
     location = ObjectVar(model=Location)
     option67_url = StringVar()
@@ -113,13 +98,14 @@ class ServeOption67(DemoJob):
     class Meta:
         """Meta."""
 
-        name = "ZTP Panorama: serve DHCP with option 67"
-        description = "Push the LAN DHCP server with Option 67 to the office's firewalls. Changes the network."
+        name = "ZTP Panorama: enable LAN routes and DHCP option 67"
+        description = "Push the LAN routes and DHCP with Option 67 to the office's firewalls. Changes the network."
 
     def run(self, location, option67_url, template_stack, **common):  # pylint: disable=arguments-differ
-        """Return {dhcp_config, commit_id}."""
-        self.work(f"Push DHCP option 67 = {option67_url} to {template_stack or location}", **common)
+        """Return {lan_routes, dhcp_config, commit_id}."""
+        self.work(f"Push LAN routes and DHCP option 67 = {option67_url} to {template_stack or location}", **common)
         return {
+            "lan_routes": ["ethernet1/2 up, office /22 in the LAN zone", "office /22 advertised over the VPN"],
             "dhcp_config": [
                 "set network dhcp interface ethernet1/2 server mode enabled",
                 f"set network dhcp interface ethernet1/2 server option user-defined ztp-script code 67 ascii {option67_url}",
@@ -265,43 +251,6 @@ class PushTemplates(DemoJob):
         }
 
 
-class EnableCorporateTunnels(DemoJob):
-    """Bring up the IPsec tunnels and BGP to the data centres: connects the office to the corporate network."""
-
-    location = ObjectVar(model=Location)
-    change_number = StringVar(required=False, default="")
-    min_seconds, max_seconds = timing(8, 16)
-
-    class Meta:
-        """Meta."""
-
-        name = "ZTP Panorama: enable corporate tunnels"
-        description = "Enable the IPsec tunnels and BGP to the data centres, under the change. Changes the network."
-
-    def run(self, location, change_number, **common):  # pylint: disable=arguments-differ
-        """Return {tunnels_enabled}."""
-        self.work(f"Enable {location}'s DC tunnels under {change_number or 'the change'}", **common)
-        return {"tunnels_enabled": ["SJC-DC1 vpn-gw", "IAD-DC2 vpn-gw"]}
-
-
-class DisableCorporateTunnels(DemoJob):
-    """Shut the DC tunnels again: the rollback of a failed enable."""
-
-    location = ObjectVar(model=Location)
-    min_seconds, max_seconds = timing(4, 8)
-
-    class Meta:
-        """Meta."""
-
-        name = "ZTP Panorama: disable corporate tunnels"
-        description = "Disable the office's DC tunnels: the rollback of a failed enable."
-
-    def run(self, location, **common):  # pylint: disable=arguments-differ
-        """Return {tunnels_disabled}."""
-        self.work(f"Disable {location}'s DC tunnels", **common)
-        return {"tunnels_disabled": True}
-
-
 class ValidateFirewalls(DemoJob):
     """A wait's check: IPsec, BGP, routing, NAT, HA failover and Panorama in-sync (HLD §7 Phase 6)."""
 
@@ -342,7 +291,6 @@ class ValidateFirewalls(DemoJob):
 
 JOBS = (
     PrepareOffice,
-    RegisterZtpSerials,
     DeviceConnected,
     ServeOption67,
     ActivateLicences,
@@ -351,8 +299,6 @@ JOBS = (
     UpgradePanos,
     RevertPanos,
     PushTemplates,
-    EnableCorporateTunnels,
-    DisableCorporateTunnels,
     ValidateFirewalls,
 )
 

@@ -4,7 +4,6 @@
 from . import (  # noqa: F401
     apc,
     backup,
-    catalyst,
     compliance,
     datadog,
     demo,
