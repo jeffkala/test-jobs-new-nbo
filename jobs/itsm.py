@@ -8,9 +8,10 @@ from datetime import timedelta
 
 from django.utils import timezone
 from nautobot.apps.jobs import JSONVar, ObjectVar, StringVar, register_jobs
+from nautobot.dcim.models import Location
 from nautobot.extras.models import DynamicGroup
 
-from .demo import DemoJob, stable, timing
+from .demo import DemoJob, stable, times_asked, timing
 
 name = "NBO demo: change management"  # pylint: disable=invalid-name
 
@@ -22,6 +23,7 @@ class RaiseChange(DemoJob):
     application = StringVar(required=False, default="")
     target_version = StringVar(required=False, default="")
     dynamic_group = ObjectVar(model=DynamicGroup, required=False)
+    location = ObjectVar(model=Location, required=False)
     failure = "change-not-raised"
     failure_message = "ServiceNow answered 503 after the change was submitted: check whether it was created"
 
@@ -31,10 +33,14 @@ class RaiseChange(DemoJob):
         name = "Demo ITSM: raise change"
         description = "Raise a normal change with its risk and implementation window. Opens a record outside NBO."
 
-    def run(self, risk, application, target_version, dynamic_group, **common):  # pylint: disable=arguments-differ,too-many-arguments
+    def run(self, risk, application, target_version, dynamic_group, location, **common):  # pylint: disable=arguments-differ,too-many-arguments
         """Return {change_number, state, window_start, window_end, short_description, url}."""
         about = application or (
-            f"upgrade {dynamic_group} to {target_version}" if target_version else "a network change"
+            f"upgrade {dynamic_group} to {target_version}"
+            if target_version
+            else f"connect {location} to the corporate network"
+            if location
+            else "a network change"
         )
         self.work(f"Raise a change for {about} (risk {risk})", **common)
         number = f"CHG{stable(common.get('ticket'), about).randint(1000000, 9999999)}"
@@ -106,6 +112,71 @@ class UpdateTicket(DemoJob):
         return {"work_note": f"{ticket}: {note or 'done'}", "ticket_state": "Resolved"}
 
 
-JOBS = (RaiseChange, InsideWindow, CloseChange, UpdateTicket)
+class RequestDnsRecords(DemoJob):
+    """Ask the DNS team, by ServiceNow ticket, for the office's records: before ZTP starts (10-21 00:14)."""
+
+    location = ObjectVar(model=Location)
+    min_seconds, max_seconds = timing(4, 8)
+
+    class Meta:
+        """Meta."""
+
+        name = "Demo ITSM: request DNS records"
+        description = "Raise a ServiceNow request to the DNS team for the office's records. Opens a record outside NBO."
+
+    def run(self, location, **common):  # pylint: disable=arguments-differ
+        """Return {dns_ticket}."""
+        self.work(f"Raise a DNS request for {location}", **common)
+        return {"dns_ticket": f"RITM{stable('dns', location.name).randint(1000000, 9999999)}"}
+
+
+class RequestCloudOnboarding(DemoJob):
+    """Ask the cloud team, by JIRA, for the office's cloud prerequisites (10-21 00:15)."""
+
+    location = ObjectVar(model=Location)
+    min_seconds, max_seconds = timing(4, 8)
+
+    class Meta:
+        """Meta."""
+
+        name = "Demo ITSM: request cloud onboarding"
+        description = "Open the cloud team's JIRA request for the office. Opens a record outside NBO."
+
+    def run(self, location, **common):  # pylint: disable=arguments-differ
+        """Return {jira_key}."""
+        self.work(f"Open the cloud team's JIRA request for {location}", **common)
+        return {"jira_key": f"CLOUD-{stable('jira', location.name).randint(1000, 9999)}"}
+
+
+class TicketsResolved(DemoJob):
+    """A wait's check: done when the other teams have resolved the pre-site tickets."""
+
+    dns_ticket = StringVar()
+    jira_key = StringVar()
+    min_seconds, max_seconds = timing(2, 5)
+
+    class Meta:
+        """Meta."""
+
+        name = "Demo ITSM: tickets resolved (check)"
+        description = "A wait's check: done when the DNS ticket and the JIRA request are resolved."
+
+    def run(self, dns_ticket, jira_key, **common):  # pylint: disable=arguments-differ
+        """The DNS team answers first: not yet the first time, done after."""
+        self.work(f"Read {dns_ticket} and {jira_key}", **common)
+        if times_asked(f"tickets:{dns_ticket}:{jira_key}:{common.get('ticket')}") == 1:
+            return self.check("Pre-site tickets", "not-yet", f"{jira_key} is In Progress with the cloud team")
+        return self.check("Pre-site tickets", "done", f"{dns_ticket} and {jira_key} are resolved")
+
+
+JOBS = (
+    RaiseChange,
+    InsideWindow,
+    CloseChange,
+    UpdateTicket,
+    RequestDnsRecords,
+    RequestCloudOnboarding,
+    TicketsResolved,
+)
 
 register_jobs(*JOBS)

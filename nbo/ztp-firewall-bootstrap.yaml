@@ -1,0 +1,31 @@
+name: ztp-firewall-bootstrap
+description: >-
+  Bootstrap one Palo Alto firewall: from USB, burned by an operator and inserted on site, or from the Palo ZTP
+  service; wait until Panorama sees it, and check it's the box Nautobot planned.
+for: device
+inputs:
+  ticket: {type: string, default: RITM0000000}
+  palo_bootstrap: {type: choice, choices: [usb, panorama-ztp], default: usb}
+  artifact_version: {type: string, optional: true}
+  demo_failure: {type: string, default: none}
+steps:
+  - Burn bootstrap USB:
+      manual: site-operators
+      description: >-
+        Download this firewall's bootstrap from Nautobot, check its SHA-256, and write it to a FAT32 USB stick as
+        config/init-cfg.txt. Label the stick with the firewall's name and hand it to the installer.
+      when: {palo_bootstrap: usb}
+      with: {artifact_version: artifact_version}
+  - Insert USB and power-cycle:
+      manual: field-ops
+      description: Insert the labelled USB stick into the firewall and power-cycle it. It loads the bootstrap as it boots.
+      when: {palo_bootstrap: usb}
+  - Connected to Panorama:
+      wait: panorama.DeviceConnected
+      timeout: 2h
+  - Verify identity:
+      job: ztp.VerifyIdentity
+      with: {artifact_version: artifact_version}
+  - Mark bootstrapped:
+      job: ztp.SetDeviceLifecycle
+      with: {stage: 1}

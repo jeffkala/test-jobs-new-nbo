@@ -1,0 +1,32 @@
+name: ztp-call-home
+description: >-
+  Bootstrap one device from the Palo's DHCP Option 67: wait for the ZTP file server to say it fetched its file by
+  serial, check it's the box Nautobot planned, and, for a 9300 in Meraki mode, upgrade a factory IOS-XE too old to
+  convert.
+for: device
+inputs:
+  ticket: {type: string, default: RITM0000000}
+  switch_management: {type: choice, choices: [meraki, cli], default: meraki}
+  artifact_version: {type: string, optional: true}
+  demo_failure: {type: string, default: none}
+steps:
+  - Called home:
+      description: >-
+        The ZTP file server calls back with the device's serial when the device fetches its bootstrap file.
+      wait: callback
+      with: {serial: device.serial}
+      timeout: 4h
+  - Verify identity:
+      job: ztp.VerifyIdentity
+      with: {artifact_version: artifact_version}
+  - Check Meraki mode support:
+      job: catalyst.CheckMerakiMode
+      when: {device.role.name: office-switch, switch_management: meraki}
+  - Upgrade IOS-XE for Meraki mode:
+      job: catalyst.UpgradeIosXe
+      rollback: catalyst.RollbackIosXe
+      when: {check_meraki_mode_support.needs_upgrade: true}
+      timeout: 1h
+  - Mark bootstrapped:
+      job: ztp.SetDeviceLifecycle
+      with: {stage: 1}

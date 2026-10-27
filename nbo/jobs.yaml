@@ -66,7 +66,7 @@ demo.Notify:
   effect: idempotent
   gives: {posted: boolean, message: string}
 itsm.RaiseChange:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, risk, application, target_version, dynamic_group]
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, risk, application, target_version, dynamic_group, location]
   effect: opens_external
   gives: {change_number: string, state: string, short_description: string, window_start: string, window_end: string, url: string}
 itsm.InsideWindow:
@@ -275,3 +275,248 @@ ports.RecordInterface:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, interface, vlan, config]
   effect: idempotent
   gives: {recorded: string}
+
+# ------------------------------------------------------------------------------------- ZTP greenfield office
+# The jobs of `ztp-greenfield-office` and its children, named after the system each one drives. Every one also
+# takes ticket, demo_failure, fail_percent, min_seconds and max_seconds (see jobs/demo.py).
+
+ztp.SetSiteLifecycle:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, stage]
+  effect: idempotent
+  gives: {site_state: string}
+ztp.SetDeviceLifecycle:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, stage]
+  effect: idempotent
+  gives: {device_state: string}
+ztp.ValidateIntake:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, airport_code, office_type]
+  effect: read
+  gives: {site_code: string, profile: string, vlans: list, checks: list}
+ztp.AllocateOfficeAddressing:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type, ap_count]
+  effect: idempotent
+  gives: {office_prefix: string, vlan_plan: list, addresses: json, dhcp: list}
+ztp.ReleaseOfficeAddressing:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {released: list}
+ztp.CreateOfficeRecords:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, ap_count, addresses]
+  effect: idempotent
+  gives: {firewalls: list, infrastructure: list, access_points: list, inventory: list, device_count: integer, circuits: list, circuit_id: string, rack_layout: list, port_map: list, power_on_order: list}
+ztp.SelectTargets:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type, switch_management]
+  effect: read
+  gives: {profile: string, firmware: list, templates: json}
+ztp.GenerateBootstrapArtifacts:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, palo_bootstrap, switch_management, addresses]
+  effect: idempotent
+  gives: {artifact_version: string, artifacts: list, secrets_in_clear: integer}
+ztp.PublishBootstrapFiles:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, file_server, artifact_version, addresses]
+  effect: idempotent
+  gives: {option67_url: string, file_server: string, published: string}
+ztp.ConfirmSiteReadiness:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, mdf_ready, patching_done, devices_on_site, notes]
+  effect: idempotent
+  gives: {checklist: list, notes: string}
+ztp.RecordFieldTests:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, circuit_tested, links_up, photos_url]
+  effect: idempotent
+  gives: {field_tests: list, photos_url: string}
+ztp.VerifyIdentity:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, artifact_version]
+  effect: read
+  gives: {identity: json, bootstrap_record: json}
+ztp.PreCheck:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {snapshot: json}
+ztp.PostCheck:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, pre]
+  effect: read
+  gives: {snapshot: json, changes: list}
+ztp.UpdateDnsAndIpam:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {prefixes: list, dns_records: list}
+ztp.ReconcileSite:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {deviations: list, report: list}
+ztp.RetireBootstrap:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, artifact_version]
+  effect: changes_network
+  gives: {retired: list}
+ztp.CommissionSite:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {site_state: string, devices_active: integer}
+ztp.ReadinessGate:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+ztp.PhysicalGate:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+ztp.BootstrapGate:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+ztp.PlatformGate:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+ztp.ConfigurationGate:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+ztp.ValidationGate:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+panorama.PrepareOffice:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type]
+  effect: idempotent
+  gives: {device_group: string, template_stack: string, templates: list, tunnels: list}
+panorama.RegisterZtpSerials:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: opens_external
+  gives: {registered: list}
+panorama.DeviceConnected:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, palo_bootstrap]
+  effect: read
+panorama.ServeOption67:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, option67_url, template_stack]
+  effect: changes_network
+  gives: {dhcp_config: list, commit_id: string}
+panorama.ActivateLicences:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {licences: list}
+panorama.FormHaPair:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: changes_network
+  gives: {ha_state: list}
+panorama.BreakHaPair:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {removed: boolean}
+panorama.UpgradePanos:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {panos_from: string, panos_to: string, path: list}
+panorama.RevertPanos:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: idempotent
+  gives: {reverted_to: string}
+panorama.PushTemplates:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {commit_id: string, pushed: list}
+panorama.EnableCorporateTunnels:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, change_number]
+  effect: changes_network
+  gives: {tunnels_enabled: list}
+panorama.DisableCorporateTunnels:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {tunnels_disabled: boolean}
+panorama.ValidateFirewalls:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+  gives: {evidence: list}
+meraki.PrepareNetwork:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type]
+  effect: idempotent
+  gives: {network_id: string, network_name: string, template: string, rf_profile: string}
+meraki.ClaimDevices:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, switch_management, network_id]
+  effect: idempotent
+  gives: {claimed: list, claimed_count: integer}
+meraki.DevicesOnline:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
+  effect: read
+meraki.ApplySwitchProfile:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, office_type]
+  effect: changes_network
+  gives: {profile: string, ports: list}
+meraki.UpgradeFirmware:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
+  effect: changes_network
+  gives: {firmware_from: string, firmware_to: string, upgraded: integer}
+meraki.ValidateWireless:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
+  effect: read
+  gives: {wireless_checks: list}
+meraki.SyncToNautobot:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, network_id]
+  effect: idempotent
+  gives: {synced: list}
+catalyst.CheckMerakiMode:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: read
+  gives: {factory_version: string, minimum: string, needs_upgrade: boolean}
+catalyst.UpgradeIosXe:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {iosxe_to: string, stack_members: integer}
+catalyst.RollbackIosXe:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: idempotent
+  gives: {rolled_back: boolean}
+catalyst.ApplyOfficeProfile:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, office_type]
+  effect: changes_network
+  gives: {config_lines: integer, sections: list}
+catalyst.RestoreBootstrapConfig:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: idempotent
+  gives: {restored: string}
+opengear.UpgradeFirmware:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {firmware_from: string, firmware_to: string}
+opengear.Configure:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {console_ports: list}
+apc.UpgradeNmc:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {firmware_from: string, firmware_to: string}
+apc.Configure:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device]
+  effect: changes_network
+  gives: {settings: list}
+pam.CreateLocalAdmin:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, pam]
+  effect: opens_external
+  gives: {secret_id: string, account: string, vault: string}
+pam.SetLocalAdmin:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, device, secret_id]
+  effect: changes_network
+  gives: {rotated: boolean, next_rotation: string}
+datadog.AddSnmpDevices:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {poller: string, monitored: list}
+datadog.DevicesPolled:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: read
+backup.EnrollDevices:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: idempotent
+  gives: {enrolled: list}
+itsm.RequestDnsRecords:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: opens_external
+  gives: {dns_ticket: string}
+itsm.RequestCloudOnboarding:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  effect: opens_external
+  gives: {jira_key: string}
+itsm.TicketsResolved:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, dns_ticket, jira_key]
+  effect: read

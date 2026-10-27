@@ -2,7 +2,8 @@
 
 Run "NBO demo: seed data" once after syncing this repository. It creates three sites, their switches and
 firewalls with interfaces and management addresses, VLANs, software versions, the dynamic groups the campaigns run
-for, the people's groups, a permission for them, and enables the demo jobs. Running it again changes nothing,
+for, the people's groups, a permission for them, and enables the demo jobs. For the ZTP demo it adds the
+greenfield offices, still empty, with the office pool and the device types, platforms and roles ZTP creates them with. Running it again changes nothing,
 unless "Reset the demo" is ticked: then every demo object goes back to how a demo starts.
 """
 
@@ -26,6 +27,8 @@ from nautobot.extras.models import DynamicGroup, Role, Status
 from nautobot.extras.models import Job as JobModel
 from nautobot.ipam.models import VLAN, IPAddress, Namespace, Prefix
 from nautobot.users.models import ObjectPermission
+
+from . import ztp
 
 name = "NBO demo: seed data"  # pylint: disable=invalid-name
 
@@ -74,11 +77,25 @@ GROUPS = {
     "All access switches": {"role": ["access-switch"]},
     "Firewalls": {"role": ["firewall"]},
 }
-TEAMS = ("network-ops", "network-change", "field-ops", "security-architects", "change-advisory-board")
+TEAMS = (
+    "network-ops",
+    "network-change",
+    "field-ops",
+    "security-architects",
+    "change-advisory-board",
+    "network-engineering",
+    "site-operators",
+)
 # Two demo people, so one asks and the other approves: NBO doesn't let a person approve their own request.
 PEOPLE = {
-    "demo-requester": ("network-ops", "field-ops"),
-    "demo-approver": ("network-change", "security-architects", "change-advisory-board", "network-ops"),
+    "demo-requester": ("network-ops", "field-ops", "site-operators"),
+    "demo-approver": (
+        "network-change",
+        "security-architects",
+        "change-advisory-board",
+        "network-ops",
+        "network-engineering",
+    ),
 }
 # What the teams may do: start and work requests, run the demo jobs, and read the inventory they act on.
 PERMISSIONS = {
@@ -91,15 +108,23 @@ PERMISSIONS = {
     "dcim.device": ["view"],
     "dcim.interface": ["view"],
     "dcim.location": ["view"],
+    "ipam.prefix": ["view"],
     "ipam.vlan": ["view"],
 }
 STATUSES = {
     "Active": (Device, Interface, Location, Prefix, IPAddress, VLAN, SoftwareVersion),
-    "Planned": (Device, Interface),
+    "Planned": (Device, Interface, Location),
     "Staged": (Device,),
     "Validated": (Device,),
     "Reserved": (Interface,),
 }
+
+
+# The ZTP demo's greenfield offices: name, what it is. Each starts Planned and empty; ZTP creates its devices.
+ZTP_SITES = (
+    ("SJC-LAB1", "Sunnyvale ZTP lab: the MVP's lab site"),
+    ("SJC-OFC2", "Sunnyvale office 2: the MVP's production greenfield site"),
+)
 
 
 class SeedDemoData(Job):
@@ -127,6 +152,7 @@ class SeedDemoData(Job):
         with transaction.atomic():
             self.statuses = self.seed_statuses()
             self.seed_inventory(reset)
+            self.seed_ztp(reset)
             self.seed_groups()
             self.seed_teams(add_me, password)
             if enable_jobs:
@@ -293,6 +319,51 @@ class SeedDemoData(Job):
         if device.primary_ip4_id != ip.pk:
             device.primary_ip4 = ip
             device.validated_save()
+
+    def seed_ztp(self, reset):
+        """Create the ZTP offices, the office pool, and the types, platforms and roles ZTP creates devices with.
+
+        With `reset`, empty every office again: its devices and prefixes go, and it is Planned.
+        """
+        site_type = LocationType.objects.get(name="Site")
+        planned = self.statuses["Planned"]
+        offices = [
+            self.ensure(
+                Location, {"name": office}, {"location_type": site_type, "status": planned, "description": about}
+            )
+            for office, about in ZTP_SITES
+        ]
+        namespace = Namespace.objects.get(name="Global")
+        self.ensure(
+            Prefix,
+            {"prefix": ztp.OFFICE_POOL, "namespace": namespace},
+            {
+                "status": self.statuses["Active"],
+                "type": "container",
+                "description": "Office pool, delegated from Device42",
+            },
+        )
+        for role_name, _, maker, model, platform_name, _, _ in (
+            *ztp.OFFICE_DEVICES,
+            (ztp.ACCESS_POINT[0], "", *ztp.ACCESS_POINT[1:]),
+        ):
+            manufacturer = self.ensure(Manufacturer, {"name": maker})
+            self.ensure(DeviceType, {"manufacturer": manufacturer, "model": model})
+            self.ensure(
+                Platform, {"name": platform_name}, {"manufacturer": manufacturer, "network_driver": platform_name}
+            )
+            role = self.ensure(Role, {"name": role_name})
+            role.content_types.add(ContentType.objects.get_for_model(Device))
+        if not reset:
+            return
+        for office in offices:
+            removed = Device.objects.filter(location=office).delete()[0]
+            Prefix.objects.filter(locations=office, type="network").delete()
+            Prefix.objects.filter(locations=office).delete()
+            if office.status != planned:
+                office.status = planned
+                office.validated_save()
+            self.logger.info("Emptied %s: removed %s objects.", office, removed)
 
     # ------------------------------------------------------------------------------------- groups, teams, jobs
     def seed_groups(self):
