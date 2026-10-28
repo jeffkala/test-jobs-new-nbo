@@ -11,7 +11,7 @@ from nautobot.apps.jobs import JSONVar, ObjectVar, StringVar, register_jobs
 from nautobot.dcim.models import Location
 from nautobot.extras.models import DynamicGroup
 
-from .demo import DemoJob, stable, times_asked, timing
+from .demo import DemoJob, stable, timing
 
 name = "NBO demo: change management"  # pylint: disable=invalid-name
 
@@ -112,71 +112,11 @@ class UpdateTicket(DemoJob):
         return {"work_note": f"{ticket}: {note or 'done'}", "ticket_state": "Resolved"}
 
 
-class RequestDnsRecords(DemoJob):
-    """Ask the DNS team, by ServiceNow ticket, for the office's records: before ZTP starts (10-21 00:14)."""
-
-    location = ObjectVar(model=Location)
-    min_seconds, max_seconds = timing(4, 8)
-
-    class Meta:
-        """Meta."""
-
-        name = "Demo ITSM: request DNS records"
-        description = "Raise a ServiceNow request to the DNS team for the office's records. Opens a record outside NBO."
-
-    def run(self, location, **common):  # pylint: disable=arguments-differ
-        """Return {dns_ticket}."""
-        self.work(f"Raise a DNS request for {location}", **common)
-        return {"dns_ticket": f"RITM{stable('dns', location.name).randint(1000000, 9999999)}"}
-
-
-class RequestCloudOnboarding(DemoJob):
-    """Ask the cloud team, by JIRA, for the office's cloud prerequisites (10-21 00:15)."""
-
-    location = ObjectVar(model=Location)
-    min_seconds, max_seconds = timing(4, 8)
-
-    class Meta:
-        """Meta."""
-
-        name = "Demo ITSM: request cloud onboarding"
-        description = "Open the cloud team's JIRA request for the office. Opens a record outside NBO."
-
-    def run(self, location, **common):  # pylint: disable=arguments-differ
-        """Return {jira_key}."""
-        self.work(f"Open the cloud team's JIRA request for {location}", **common)
-        return {"jira_key": f"CLOUD-{stable('jira', location.name).randint(1000, 9999)}"}
-
-
-class TicketsResolved(DemoJob):
-    """A wait's check: done when the other teams have resolved the pre-site tickets."""
-
-    dns_ticket = StringVar()
-    jira_key = StringVar()
-    min_seconds, max_seconds = timing(2, 5)
-
-    class Meta:
-        """Meta."""
-
-        name = "Demo ITSM: tickets resolved (check)"
-        description = "A wait's check: done when the DNS ticket and the JIRA request are resolved."
-
-    def run(self, dns_ticket, jira_key, **common):  # pylint: disable=arguments-differ
-        """The DNS team answers first: not yet the first time, done after."""
-        self.work(f"Read {dns_ticket} and {jira_key}", **common)
-        if times_asked(f"tickets:{dns_ticket}:{jira_key}:{common.get('ticket')}") == 1:
-            return self.check("Pre-site tickets", "not-yet", f"{jira_key} is In Progress with the cloud team")
-        return self.check("Pre-site tickets", "done", f"{dns_ticket} and {jira_key} are resolved")
-
-
 JOBS = (
     RaiseChange,
     InsideWindow,
     CloseChange,
     UpdateTicket,
-    RequestDnsRecords,
-    RequestCloudOnboarding,
-    TicketsResolved,
 )
 
 register_jobs(*JOBS)

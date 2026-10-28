@@ -12,10 +12,21 @@ Nothing touches a network; every device answers as the real one would.
 import hashlib
 import ipaddress
 
+from django.contrib.contenttypes.models import ContentType
 from nautobot.apps.jobs import BooleanVar, IntegerVar, JSONVar, ObjectVar, StringVar, register_jobs
-from nautobot.dcim.models import Device, DeviceType, Location, Platform
+from nautobot.dcim.models import (
+    Cable,
+    ConsolePort,
+    ConsoleServerPort,
+    Device,
+    DeviceType,
+    Interface,
+    Location,
+    Platform,
+    Rack,
+)
 from nautobot.extras.models import Role, Status
-from nautobot.ipam.models import Namespace, Prefix
+from nautobot.ipam.models import VLAN, IPAddress, IPAddressToInterface, Namespace, Prefix
 
 from .demo import DemoFailure, DemoJob, ref, set_status, stable, timing
 
@@ -35,7 +46,7 @@ SITE_LIFECYCLE = (
 # A device's own lifecycle: created from the plan, through bootstrap and full config, to production.
 DEVICE_LIFECYCLE = ("Planned", "Bootstrapped", "Configured", "Active")
 
-# The office pool Device42 delegates to Nautobot; every office gets the next free /22 of it.
+# The office pool Device42 delegates; a person allocates each office a /22 of it, or bigger.
 OFFICE_POOL = "10.64.0.0/12"
 OFFICE_PREFIX_LENGTH = 22
 # The office's VLANs per profile: VLAN, name, prefix length. EBC adds the AV and multicast VLAN (10-21 01:09).
@@ -62,18 +73,42 @@ OFFICE_DEVICES = (
 ACCESS_POINT = ("wireless-ap", "Cisco Meraki", "CW9166I-MR", "meraki", "MR 30.6", "MR 31.1.5")
 # The devices the Palo's DHCP Option 67 bootstraps, from the central ZTP file server (10-21 00:55–01:01).
 CALL_HOME_ROLES = ("office-switch", "console-server", "ups", "pdu")
+CALL_HOME_SUFFIXES = ("sw-01", "con-01", "ups-01", "pdu-01")
 # Where each device's management address sits in the management VLAN.
 MGMT_HOSTS = {"fw-01": 4, "fw-02": 5, "sw-01": 10, "con-01": 11, "ups-01": 12, "pdu-01": 13}
 FIRST_AP_HOST = 20
-# The port map (HLD §7 Phase 2). It is the permanent design: only VLAN 1 on the switch is temporary (10-27W 00:42).
+# Each role's interfaces: name, type, and whether it's the management interface that holds the primary IP.
+INTERFACES = {
+    "edge-firewall": (
+        ("management", "1000base-t", True),
+        ("ethernet1/1", "1000base-t", False),
+        ("ethernet1/2", "1000base-t", False),
+        ("HA1", "1000base-t", False),
+    ),
+    "office-switch": (
+        ("Vlan100", "virtual", True),
+        *((f"GigabitEthernet1/0/{port}", "1000base-t", False) for port in range(1, 5)),
+    ),
+    "console-server": (("NET1", "1000base-t", True),),
+    "ups": (("NMC", "1000base-t", True),),
+    "pdu": (("NMC", "1000base-t", True),),
+    "wireless-ap": (("wired0", "1000base-t", True),),
+}
+CONSOLE_PORTS = {"office-switch": ("console",)}
+CONSOLE_SERVER_PORTS = {"console-server": ("Port 1",)}
+# The port map (HLD §7 Phase 2): from, port, to, port, what it carries. It is the permanent design: only VLAN 1 on the
+# switch is temporary (10-27W 00:42).
 PORT_MAP = (
-    ("sw-01", "GigabitEthernet1/0/1", "ISP", "DIA handoff (primary)"),
-    ("sw-01", "GigabitEthernet1/0/2", "fw-01", "ethernet1/1 (WAN)"),
-    ("sw-01", "GigabitEthernet1/0/3", "fw-01", "ethernet1/2 (LAN)"),
-    ("sw-01", "GigabitEthernet1/0/4", "con-01", "LAN"),
-    ("con-01", "Port 1", "sw-01", "console"),
-    ("fw-01", "HA1/HA2", "fw-02", "HA1/HA2"),
+    ("sw-01", "GigabitEthernet1/0/1", None, "", "ISP DIA handoff (primary)"),
+    ("sw-01", "GigabitEthernet1/0/2", "fw-01", "ethernet1/1", "Palo WAN"),
+    ("sw-01", "GigabitEthernet1/0/3", "fw-01", "ethernet1/2", "Palo LAN"),
+    ("sw-01", "GigabitEthernet1/0/4", "con-01", "NET1", "OpenGear LAN"),
+    ("con-01", "Port 1", "sw-01", "console", "switch console"),
+    ("fw-01", "HA1", "fw-02", "HA1", "HA link"),
 )
+# The MDF rack: each racked device's position, top down; the PDU mounts at the rear, zero-U, with no position.
+RACK = "MDF-R1"
+RACK_LAYOUT = {"con-01": 42, "sw-01": 40, "fw-01": 36, "fw-02": 34, "ups-01": 2, "pdu-01": None}
 POWER_ON_ORDER = ("sw-01", "fw-01", "fw-02", "con-01")
 # The central ZTP file server the Option 67 URL points at, reached through the Palo's VPN (Z3). Its host is open.
 FILE_SERVER = "https://ztp.corp.example.com/offices/{site}/"
@@ -183,45 +218,232 @@ class ValidateIntake(DemoJob):
         }
 
 
-class AllocateOfficeAddressing(DemoJob):
-    """Take the next /22 from the office pool and split it per VLAN: the "beforehand" split of 10-21 00:32."""
+class ConfirmOfficePrefix(DemoJob):
+    """Check and record the office prefix a person allocated from the Device42 office pool (10-21 00:32–00:36).
+
+    Network Eng allocates the office's /22 in Device42 and pastes it into this job's form. It must be an IPv4 network
+    in CIDR form, such as 10.64.4.0/22, with no host bits set, and at least a /22: the office's VLANs fill one. A value
+    that fails any check fails the step with the reason; Retry with changes takes the corrected prefix. The job records
+    it in Nautobot as the office's container prefix, which the next step splits per VLAN.
+    """
 
     location = ObjectVar(model=Location)
-    office_type = StringVar(default="normal")
-    ap_count = IntegerVar(default=6, min_value=1, max_value=40)
-    min_seconds, max_seconds = timing(4, 10)
+    office_prefix = StringVar(
+        label="Office prefix", description="The prefix you allocated in Device42, in CIDR form, such as 10.64.4.0/22"
+    )
+    min_seconds, max_seconds = timing(1, 2)
 
     class Meta:
         """Meta."""
 
-        name = "ZTP: allocate office addressing"
-        description = "Allocate the office /22 from the Device42-delegated pool, split it per VLAN, plan addresses."
+        name = "ZTP: confirm office prefix"
+        description = (
+            "Check the office prefix a person allocated is an IPv4 CIDR network of at least a /22, and record it as "
+            "the office's container prefix. Started by a person, with the form."
+        )
 
-    def run(self, location, office_type, ap_count, **common):  # pylint: disable=arguments-differ
-        """Return {office_prefix, vlan_plan, addresses, dhcp}. Running it again returns the same allocation."""
-        self.work(f"Allocate a /{OFFICE_PREFIX_LENGTH} for {location} from {OFFICE_POOL}", **common)
+    def run(self, location, office_prefix, **common):  # pylint: disable=arguments-differ
+        """Return {office_prefix}; fail on a value that isn't a usable office prefix."""
+        self.work(f"Check {office_prefix} for {location}", **common)
+        network = office_network(office_prefix)
         namespace = Namespace.objects.get(name="Global")
-        active = Status.objects.get(name="Active")
-        office = Prefix.objects.filter(namespace=namespace, locations=location, type="container").first()
+        prefix = Prefix.objects.filter(prefix=str(network), namespace=namespace).first()
+        if prefix is not None and prefix.locations.exclude(pk=location.pk).exists():
+            raise DemoFailure(
+                f"{network} is already recorded for {prefix.locations.exclude(pk=location.pk).first()}: allocate "
+                "another prefix, then Retry with changes"
+            )
+        if prefix is None:
+            prefix = Prefix(
+                prefix=str(network),
+                namespace=namespace,
+                status=status_for(Prefix, "Active"),
+                type="container",
+                description=f"{location} office",
+            )
+            prefix.validated_save()
+        prefix.locations.add(location)
+        return {"office_prefix": str(network)}
+
+
+def office_network(text):
+    """Return `text` as an IPv4 network of at least a /22, or raise DemoFailure saying what's wrong with it."""
+    text = (text or "").strip()
+    again = "Retry with changes with the right prefix"
+    try:
+        exact = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        raise DemoFailure(f"'{text}' isn't a prefix in CIDR form, such as 10.64.4.0/22: {again}") from None
+    if "/" not in text:
+        raise DemoFailure(f"'{text}' has no prefix length, such as /22: {again}")
+    if str(exact) != text and ipaddress.ip_interface(text).ip != exact.network_address:
+        raise DemoFailure(f"'{text}' has host bits set: did you mean {exact}? {again}")
+    if exact.version != 4:
+        raise DemoFailure(f"{exact} is IPv6, and the office plan is IPv4: {again}")
+    if exact.prefixlen > OFFICE_PREFIX_LENGTH:
+        raise DemoFailure(f"{exact} is too small: the office's VLANs need a /{OFFICE_PREFIX_LENGTH} or bigger. {again}")
+    return exact
+
+
+def status_for(model, name):
+    """Return the status `name`, creating it or adding `model` to it as Nautobot needs to use it there."""
+    status, _ = Status.objects.get_or_create(name=name)
+    status.content_types.add(ContentType.objects.get_for_model(model))
+    return status
+
+
+class DesignBuildTheNetwork(DemoJob):
+    """Design and build the office in Nautobot in one shot, in Phase 1 before anyone goes to site (HLD §7 Phase 1).
+
+    From the office prefix and the office type it creates, or finds when run again:
+
+    - VLANs: the profile's VLANs at the location; EBC adds the AV and multicast VLAN (10-21 01:09).
+    - Prefixes: the office prefix split per VLAN, each linked to its VLAN: the "beforehand" split of 10-21 00:32.
+    - Devices with their role, model, platform and serials: the PA-3220 pair, the 9300 stack, the OpenGear, the APC
+      UPS and PDU, and the Meraki APs, each Planned. Later steps trust these records: the 9300 and AP serials are
+      claimed in the Meraki Dashboard before install, and every device's serial, model and role are checked against
+      them at bootstrap (HLD §7 Phase 3).
+    - Interfaces, console ports and console server ports, and a management interface on each device.
+    - IP addresses: one per device in the management VLAN, assigned to its management interface and made its primary
+      IPv4 address.
+    - The MDF rack, with each device in its position; the PDU mounts at the rear, zero-U.
+    - Cables per the port map, the permanent design: the Palo's WAN and LAN and the OpenGear on the 9300, the
+      OpenGear's console on the 9300's, the HA link between the Palos; only the switch's VLAN 1 is temporary
+      (10-27W 00:42, 00:55). The ISP handoff on port 1 isn't cabled: the circuits aren't modelled in Nautobot here,
+      only returned as values.
+
+    It returns the devices grouped for the bootstrap, the inventory with management addresses, the rack layout, the
+    port map and the power-on order the field team installs by (HLD §7 Phase 2). Running it again creates nothing
+    twice.
+    """
+
+    location = ObjectVar(model=Location)
+    office_type = StringVar(default="normal")
+    ap_count = IntegerVar(default=6, min_value=1, max_value=40)
+    office_prefix = StringVar(description="The office prefix, as Confirm office prefix recorded it")
+    min_seconds, max_seconds = timing(8, 16)
+
+    class Meta:
+        """Meta."""
+
+        name = "ZTP: design and build the network"
+        description = (
+            "Create the office in Nautobot in one shot: VLANs, the office prefix split per VLAN, devices with serials, "
+            "interfaces, management IPs as primary IPs, the MDF rack with each device placed, and the cables of the "
+            "port map. Safe to repeat."
+        )
+
+    def run(self, location, office_type, ap_count, office_prefix, **common):  # pylint: disable=arguments-differ,too-many-arguments,too-many-locals
+        """Return the plan, the addresses, the devices by kind as fan-out items, and what was built."""
+        self.work(f"Design and build {location} in {office_prefix}", **common)
+        site = site_code(location)
+        namespace = Namespace.objects.get(name="Global")
+        office = Prefix.objects.filter(prefix=office_prefix, namespace=namespace, locations=location).first()
         if office is None:
-            office = self.next_free(namespace)
-            office.status, office.type, office.description = active, "container", f"{location} office"
-            office.validated_save()
-            office.locations.add(location)
-        plan, network = [], ipaddress.ip_network(str(office.prefix))
-        start = network.network_address
+            raise DemoFailure(f"{office_prefix} isn't recorded for {location}: confirm the office prefix, then Retry")
+        plan = self.vlans_and_prefixes(location, office, office_type, namespace)
+        mgmt = ipaddress.ip_network(next(row["prefix"] for row in plan if row["name"] == "management"))
+        addresses = {suffix: f"{mgmt.network_address + host}/{mgmt.prefixlen}" for suffix, host in MGMT_HOSTS.items()}
+        for number in range(1, ap_count + 1):
+            addresses[f"ap-{number:02d}"] = f"{mgmt.network_address + FIRST_AP_HOST + number - 1}/{mgmt.prefixlen}"
+        rack = self.find_or_create(
+            Rack, {"location": location, "name": RACK}, {"status": status_for(Rack, "Active"), "u_height": 42}
+        )
+        rows = list(OFFICE_DEVICES) + [
+            (ACCESS_POINT[0], f"ap-{number:02d}", *ACCESS_POINT[1:]) for number in range(1, ap_count + 1)
+        ]
+        devices, by_suffix = [], {}
+        for role_name, suffix, _, model, platform_name, factory, target in rows:
+            device = self.device(location, rack, site, role_name, suffix, model, platform_name)
+            self.management_ip(device, role_name, addresses[suffix], namespace)
+            devices.append((device, role_name, suffix, model, factory, target))
+            by_suffix[suffix] = device
+        cables = self.cables(by_suffix)
+        by_role = {}
+        for device, role_name, *_ in devices:
+            by_role.setdefault(role_name, []).append(ref(device))
+        rng = stable("circuit", site)
+        circuits = [
+            {"circuit_id": f"DIA-{site.upper()}-{rng.randint(10000, 99999)}", "provider": provider, "role": role}
+            for provider, role in (("Lumen", "primary"), ("Comcast Business", "secondary"))
+        ]
+        return {
+            "office_prefix": office_prefix,
+            "vlan_plan": plan,
+            "addresses": addresses,
+            "dhcp": [
+                {"device": suffix, "reservation": address.split("/")[0], "option_67": suffix in CALL_HOME_SUFFIXES}
+                for suffix, address in addresses.items()
+                if not suffix.startswith("fw-")
+            ],
+            "firewalls": by_role["edge-firewall"],
+            "infrastructure": [item for role in CALL_HOME_ROLES for item in by_role[role]],
+            "access_points": [
+                {"name": d.name, "serial": d.serial, "address": addresses[s]}
+                for d, role, s, *_ in devices
+                if role == "wireless-ap"
+            ],
+            "inventory": [
+                {"device": d.name, "role": role, "model": model, "serial": d.serial, "mgmt": addresses[s]}
+                for d, role, s, model, *_ in devices
+            ],
+            "device_count": len(devices),
+            "circuits": circuits,
+            "circuit_id": circuits[0]["circuit_id"],
+            "rack_layout": [
+                {"rack": RACK, "u": u or 0, "device": f"{site}-{suffix}" + ("" if u else " (rear, zero-U)")}
+                for suffix, u in RACK_LAYOUT.items()
+            ],
+            "port_map": [
+                {
+                    "from": f"{site}-{a}",
+                    "port": a_port,
+                    "to": f"{site}-{b}" if b else "ISP",
+                    "far_end": b_port,
+                    "purpose": purpose,
+                }
+                for a, a_port, b, b_port, purpose in PORT_MAP
+            ],
+            "power_on_order": [f"{site}-{suffix}" for suffix in POWER_ON_ORDER],
+            "built": {
+                "vlans": len(plan),
+                "prefixes": len(plan),
+                "devices": len(devices),
+                "interfaces": Interface.objects.filter(device__location=location).count(),
+                "ip_addresses": len(devices),
+                "cables": cables,
+                "rack": RACK,
+            },
+        }
+
+    @staticmethod
+    def find_or_create(model, lookup, defaults=None):
+        """Return the object `lookup` finds, or create it with `defaults` too: the job is safe to repeat."""
+        found = model.objects.filter(**lookup).first()
+        if found is None:
+            found = model(**lookup, **(defaults or {}))
+            found.validated_save()
+        return found
+
+    def vlans_and_prefixes(self, location, office, office_type, namespace):
+        """Create the profile's VLANs and split the office prefix per VLAN, smallest first; return the VLAN plan."""
+        plan, start = [], ipaddress.ip_network(str(office.prefix)).network_address
+        active = status_for(VLAN, "Active")
         for vid, vname, length in sorted(VLAN_PROFILES[office_type], key=lambda vlan: vlan[2]):
             subnet = ipaddress.ip_network(f"{start}/{length}")
             start = subnet.broadcast_address + 1
-            prefix = Prefix.objects.filter(prefix=str(subnet), namespace=namespace).first()
-            if prefix is None:
-                prefix = Prefix(
-                    prefix=str(subnet),
-                    namespace=namespace,
-                    status=active,
-                    type="network",
-                    description=f"{location} VLAN {vid} {vname}",
-                )
+            vlan = VLAN.objects.filter(locations=location, vid=vid).first()
+            if vlan is None:
+                vlan = VLAN(vid=vid, name=f"{site_code(location)}-{vname}", status=active)
+                vlan.validated_save()
+                vlan.locations.add(location)
+            prefix = self.find_or_create(
+                Prefix,
+                {"prefix": str(subnet), "namespace": namespace},
+                {"status": status_for(Prefix, "Active"), "type": "network", "description": f"{location} {vname}"},
+            )
+            if prefix.vlan_id != vlan.pk:
+                prefix.vlan = vlan
                 prefix.validated_save()
             prefix.locations.add(location)
             hosts = list(subnet.hosts())
@@ -234,129 +456,75 @@ class AllocateOfficeAddressing(DemoJob):
                     "dhcp": "" if vname == "management" else f"{hosts[min(9, len(hosts) - 1)]}-{hosts[-1]}",
                 }
             )
-        mgmt = ipaddress.ip_network(next(row["prefix"] for row in plan if row["name"] == "management"))
-        addresses = {suffix: f"{mgmt.network_address + host}/{mgmt.prefixlen}" for suffix, host in MGMT_HOSTS.items()}
-        for number in range(1, ap_count + 1):
-            addresses[f"ap-{number:02d}"] = f"{mgmt.network_address + FIRST_AP_HOST + number - 1}/{mgmt.prefixlen}"
-        dhcp = [
-            {
-                "device": suffix,
-                "reservation": address.split("/")[0],
-                "option_67": suffix in ("sw-01", "con-01", "ups-01", "pdu-01"),
-            }
-            for suffix, address in addresses.items()
-            if not suffix.startswith("fw-")
-        ]
-        return {"office_prefix": str(office.prefix), "vlan_plan": plan, "addresses": addresses, "dhcp": dhcp}
+        return plan
+
+    def device(self, location, rack, site, role_name, suffix, model, platform_name):  # pylint: disable=too-many-arguments
+        """Create the device in its rack position, with its interfaces and console ports; return it."""
+        device = Device.objects.filter(name=f"{site}-{suffix}").first()
+        if device is None:
+            position = RACK_LAYOUT.get(suffix)
+            device = Device(
+                name=f"{site}-{suffix}",
+                location=location,
+                role=Role.objects.get(name=role_name),
+                device_type=DeviceType.objects.get(model=model),
+                platform=Platform.objects.get(name=platform_name),
+                serial=serial_for(site, suffix, model),
+                status=status_for(Device, "Planned"),
+                rack=rack if suffix in RACK_LAYOUT else None,
+                position=position,
+                face="front" if position else "",
+            )
+            device.validated_save()
+            self.logger.info("Created %s, serial %s.", device, device.serial)
+        planned = status_for(Interface, "Planned")
+        for interface_name, kind, management in INTERFACES[role_name]:
+            self.find_or_create(
+                Interface,
+                {"device": device, "name": interface_name},
+                {"type": kind, "mgmt_only": management, "status": planned},
+            )
+        for port_name in CONSOLE_PORTS.get(role_name, ()):
+            self.find_or_create(ConsolePort, {"device": device, "name": port_name}, {"type": "rj-45"})
+        for port_name in CONSOLE_SERVER_PORTS.get(role_name, ()):
+            self.find_or_create(ConsoleServerPort, {"device": device, "name": port_name}, {"type": "rj-45"})
+        return device
+
+    def management_ip(self, device, role_name, address, namespace):
+        """Assign the device's management address to its management interface and make it the primary IPv4."""
+        interface = Interface.objects.get(device=device, name=next(n for n, _, m in INTERFACES[role_name] if m))
+        ip = IPAddress.objects.filter(address=address, parent__namespace=namespace).first()
+        if ip is None:
+            ip = IPAddress(address=address, namespace=namespace, status=status_for(IPAddress, "Active"))
+            ip.validated_save()
+        if not IPAddressToInterface.objects.filter(ip_address=ip, interface=interface).exists():
+            interface.add_ip_addresses(ip)
+        if device.primary_ip4_id != ip.pk:
+            device.primary_ip4 = ip
+            device.validated_save()
 
     @staticmethod
-    def next_free(namespace):
-        """Return a new Prefix for the first /22 of the pool no office holds yet."""
-        pool = ipaddress.ip_network(OFFICE_POOL)
-        taken = {str(p.prefix) for p in Prefix.objects.filter(namespace=namespace, prefix_length=OFFICE_PREFIX_LENGTH)}
-        for candidate in pool.subnets(new_prefix=OFFICE_PREFIX_LENGTH):
-            if str(candidate) not in taken:
-                return Prefix(prefix=str(candidate), namespace=namespace)
-        raise DemoFailure(f"The office pool {OFFICE_POOL} is full: ask the IPAM team for another delegation")
+    def cables(by_suffix):
+        """Cable the port map between the office's devices; return how many cables the port map has in Nautobot."""
+        planned = status_for(Cable, "Planned")
+        count = 0
+        for a, a_port, b, b_port, purpose in PORT_MAP:
+            if b is None:
+                continue  # the ISP handoff: its circuit isn't modelled here
+            end_a, end_b = port_of(by_suffix[a], a_port), port_of(by_suffix[b], b_port)
+            if end_a.cable_id is None and end_b.cable_id is None:
+                Cable(termination_a=end_a, termination_b=end_b, status=planned, label=purpose).validated_save()
+            count += 1
+        return count
 
 
-class ReleaseOfficeAddressing(DemoJob):
-    """Give the office's prefixes back to the pool: the rollback of a failed allocation."""
-
-    location = ObjectVar(model=Location)
-    min_seconds, max_seconds = timing(2, 5)
-
-    class Meta:
-        """Meta."""
-
-        name = "ZTP: release office addressing"
-        description = "Delete the office's prefixes so the /22 returns to the pool. Safe to repeat."
-
-    def run(self, location, **common):  # pylint: disable=arguments-differ
-        """Return {released}."""
-        self.work(f"Release {location}'s prefixes", **common)
-        released = [str(p.prefix) for p in Prefix.objects.filter(locations=location)]
-        Prefix.objects.filter(locations=location).delete()
-        return {"released": released}
-
-
-class CreateOfficeRecords(DemoJob):
-    """Create the office's devices with their serials, the circuits, the rack layout and the bootstrap port map."""
-
-    location = ObjectVar(model=Location)
-    ap_count = IntegerVar(default=6, min_value=1, max_value=40)
-    addresses = JSONVar(description="The management address of each device, from the allocation")
-    min_seconds, max_seconds = timing(5, 12)
-
-    class Meta:
-        """Meta."""
-
-        name = "ZTP: create office records"
-        description = "Create the office's devices, circuits, rack layout and port map in Nautobot. Safe to repeat."
-
-    def run(self, location, ap_count, addresses, **common):  # pylint: disable=arguments-differ
-        """Return the devices by kind, as fan-out items, with the circuits, rack layout and port map."""
-        self.work(f"Create {location}'s devices, circuits and port map", **common)
-        site = site_code(location)
-        planned = Status.objects.get(name="Planned")
-        rows = list(OFFICE_DEVICES) + [
-            (ACCESS_POINT[0], f"ap-{number:02d}", *ACCESS_POINT[1:]) for number in range(1, ap_count + 1)
-        ]
-        devices = []
-        for role_name, suffix, _, model, platform_name, factory, target in rows:
-            device = Device.objects.filter(name=f"{site}-{suffix}").first()
-            if device is None:
-                device = Device(
-                    name=f"{site}-{suffix}",
-                    location=location,
-                    role=Role.objects.get(name=role_name),
-                    device_type=DeviceType.objects.get(model=model),
-                    platform=Platform.objects.get(name=platform_name),
-                    serial=serial_for(site, suffix, model),
-                    status=planned,
-                )
-                device.validated_save()
-                self.logger.info("Created %s, serial %s.", device, device.serial)
-            devices.append((device, role_name, suffix, model, factory, target))
-        by_role = {}
-        for device, role_name, *_ in devices:
-            by_role.setdefault(role_name, []).append(ref(device))
-        rng = stable("circuit", site)
-        circuits = [
-            {"circuit_id": f"DIA-{site.upper()}-{rng.randint(10000, 99999)}", "provider": provider, "role": role}
-            for provider, role in (("Lumen", "primary"), ("Comcast Business", "secondary"))
-        ]
-        return {
-            "firewalls": by_role["edge-firewall"],
-            "infrastructure": [item for role in CALL_HOME_ROLES for item in by_role[role]],
-            "access_points": [
-                {"name": d.name, "serial": d.serial, "address": addresses.get(s, "")}
-                for d, role, s, *_ in devices
-                if role == "wireless-ap"
-            ],
-            "inventory": [
-                {"device": d.name, "role": role, "model": model, "serial": d.serial, "mgmt": addresses.get(s, "")}
-                for d, role, s, model, *_ in devices
-            ],
-            "device_count": len(devices),
-            "circuits": circuits,
-            "circuit_id": circuits[0]["circuit_id"],
-            "rack_layout": [
-                {"rack": "MDF-R1", "u": u, "device": f"{site}-{suffix}"}
-                for u, suffix in ((42, "con-01"), (40, "sw-01"), (36, "fw-01"), (34, "fw-02"), (2, "ups-01"))
-            ]
-            + [{"rack": "MDF-R1", "u": 0, "device": f"{site}-pdu-01 (rear, zero-U)"}],
-            "port_map": [
-                {
-                    "from": f"{site}-{a}" if a != "ISP" else a,
-                    "port": port,
-                    "to": f"{site}-{b}" if b != "ISP" else b,
-                    "far_end": far,
-                }
-                for a, port, b, far in PORT_MAP
-            ],
-            "power_on_order": [f"{site}-{suffix}" for suffix in POWER_ON_ORDER],
-        }
+def port_of(device, name):
+    """Return the device's interface, console port or console server port called `name`."""
+    for model in (Interface, ConsolePort, ConsoleServerPort):
+        found = model.objects.filter(device=device, name=name).first()
+        if found is not None:
+            return found
+    raise DemoFailure(f"{device} has no port {name}: the port map names a port the design doesn't create")
 
 
 class SelectTargets(DemoJob):
@@ -920,9 +1088,8 @@ JOBS = (
     SetSiteLifecycle,
     SetDeviceLifecycle,
     ValidateIntake,
-    AllocateOfficeAddressing,
-    ReleaseOfficeAddressing,
-    CreateOfficeRecords,
+    ConfirmOfficePrefix,
+    DesignBuildTheNetwork,
     SelectTargets,
     GenerateBootstrapArtifacts,
     PublishBootstrapFiles,

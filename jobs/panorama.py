@@ -18,9 +18,19 @@ PANOS_FACTORY = next(row[5] for row in OFFICE_DEVICES if row[4] == "paloalto_pan
 
 
 class PrepareOffice(DemoJob):
-    """Panorama pre-work: the office's device group, template stack, address objects and DC tunnels (10-21 00:10).
+    """Panorama pre-work, in Phase 1 before anyone goes to site: tunnels, office objects, templates (10-21 00:10).
 
-    The tunnels go into the firewalls' USB base config, so they come up at bootstrap.
+    - Allocates the office's VPN tunnels back to the corporate network, one per data centre gateway. They go into the
+      firewalls' USB base config (`ztp.GenerateBootstrapArtifacts`), so they come up at bootstrap: Panorama isn't
+      exposed to the internet, and the firewalls reach it only over these tunnels (Z11; 10-27W 00:51–00:52).
+    - Creates the office's objects: its device group, its address objects from the office's prefixes, and the template
+      stack built from the base PA-3220 template, the normal or EBC profile template and the office's own template.
+    - Stages, and doesn't push: nothing reaches a firewall here. A firewall connects with its USB base config; LAN
+      routes and DHCP option 67 are enabled after it's stable (`panorama.ServeOption67`), and the full device and policy
+      templates are pushed after its PAN-OS upgrade (Phase 5; 10-21 00:39).
+
+    The Palo ZTP service and its Panorama plugin aren't used (Z1). Still open: how to stage the templates, since a
+    template is all or nothing; a minimal first template may be needed (Z12; 10-27W 01:00).
     """
 
     location = ObjectVar(model=Location)
@@ -32,7 +42,8 @@ class PrepareOffice(DemoJob):
 
         name = "ZTP Panorama: prepare office"
         description = (
-            "Create the office's device group, template stack, address objects and DC tunnels. Safe to repeat."
+            "Pre-work before install: allocate the office's VPN tunnels for the USB base config, and create its device "
+            "group, address objects and template stack for the normal or EBC profile. Pushes nothing. Safe to repeat."
         )
 
     def run(self, location, office_type, **common):  # pylint: disable=arguments-differ

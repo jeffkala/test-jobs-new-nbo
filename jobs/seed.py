@@ -11,8 +11,10 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.db.models import Q
 from nautobot.apps.jobs import BooleanVar, Job, StringVar, register_jobs
 from nautobot.dcim.models import (
+    Cable,
     Device,
     DeviceType,
     Interface,
@@ -20,6 +22,7 @@ from nautobot.dcim.models import (
     LocationType,
     Manufacturer,
     Platform,
+    Rack,
     SoftwareVersion,
 )
 from nautobot.extras.choices import DynamicGroupTypeChoices
@@ -323,7 +326,7 @@ class SeedDemoData(Job):
     def seed_ztp(self, reset):
         """Create the ZTP offices, the office pool, and the types, platforms and roles ZTP creates devices with.
 
-        With `reset`, empty every office again: its devices and prefixes go, and it is Planned.
+        With `reset`, empty every office again: what the design and build created goes, and it is Planned.
         """
         site_type = LocationType.objects.get(name="Site")
         planned = self.statuses["Planned"]
@@ -357,9 +360,18 @@ class SeedDemoData(Job):
         if not reset:
             return
         for office in offices:
+            # Cables before their devices, IPs before their prefixes, prefixes before their VLANs, racks last.
+            Cable.objects.filter(
+                Q(interfaces__device__location=office)
+                | Q(console_ports__device__location=office)
+                | Q(console_server_ports__device__location=office)
+            ).distinct().delete()
             removed = Device.objects.filter(location=office).delete()[0]
+            IPAddress.objects.filter(parent__locations=office).delete()
             Prefix.objects.filter(locations=office, type="network").delete()
             Prefix.objects.filter(locations=office).delete()
+            VLAN.objects.filter(locations=office).delete()
+            Rack.objects.filter(location=office).delete()
             if office.status != planned:
                 office.status = planned
                 office.validated_save()

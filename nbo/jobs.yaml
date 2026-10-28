@@ -292,18 +292,14 @@ ztp.ValidateIntake:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, airport_code, office_type]
   effect: read
   gives: {site_code: string, profile: string, vlans: list, checks: list}
-ztp.AllocateOfficeAddressing:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type, ap_count]
+ztp.ConfirmOfficePrefix:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_prefix]
   effect: idempotent
-  gives: {office_prefix: string, vlan_plan: list, addresses: json, dhcp: list}
-ztp.ReleaseOfficeAddressing:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
+  gives: {office_prefix: string}
+ztp.DesignBuildTheNetwork:
+  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type, ap_count, office_prefix]
   effect: idempotent
-  gives: {released: list}
-ztp.CreateOfficeRecords:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, ap_count, addresses]
-  effect: idempotent
-  gives: {firewalls: list, infrastructure: list, access_points: list, inventory: list, device_count: integer, circuits: list, circuit_id: string, rack_layout: list, port_map: list, power_on_order: list}
+  gives: {office_prefix: string, vlan_plan: list, addresses: json, dhcp: list, firewalls: list, infrastructure: list, access_points: list, inventory: list, device_count: integer, circuits: list, circuit_id: string, rack_layout: list, port_map: list, power_on_order: list, built: json}
 ztp.SelectTargets:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location, office_type]
   effect: read
@@ -484,14 +480,3 @@ backup.EnrollDevices:
   vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
   effect: idempotent
   gives: {enrolled: list}
-itsm.RequestDnsRecords:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
-  effect: opens_external
-  gives: {dns_ticket: string}
-itsm.RequestCloudOnboarding:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, location]
-  effect: opens_external
-  gives: {jira_key: string}
-itsm.TicketsResolved:
-  vars: [ticket, demo_failure, fail_percent, min_seconds, max_seconds, dns_ticket, jira_key]
-  effect: read

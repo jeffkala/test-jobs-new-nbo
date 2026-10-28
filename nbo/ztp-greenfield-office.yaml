@@ -51,41 +51,66 @@ inputs:
 steps:
   - phase: Plan
   - Validate intake: ztp.ValidateIntake
-  - Allocate office addressing:
-      job: ztp.AllocateOfficeAddressing
-      rollback: ztp.ReleaseOfficeAddressing
-  - Create office records:
-      job: ztp.CreateOfficeRecords
-      with: {addresses: allocate_office_addressing.addresses}
-  - Select profile and firmware: ztp.SelectTargets
+  - Allocate office prefix:
+      manual: network-engineering
+      description: >-
+        Allocate the office a /22 from the office pool Device42 delegates (10.64.0.0/12). Mark done with a comment
+        naming the prefix.
+  - Confirm office prefix:
+      job: ztp.ConfirmOfficePrefix
+      manual: network-engineering
+      description: >-
+        Paste the prefix you allocated, in CIDR form, such as 10.64.4.0/22. It must be an IPv4 network address with
+        no host bits set, a /22 or bigger. A prefix that fails a check fails the step with the reason: Retry with
+        changes with the right one.
+  - Design and build the network:
+      description: >-
+        Creates the office in Nautobot in one shot: VLANs, the office prefix split per VLAN, devices with serials,
+        interfaces, management IPs as primary IPs, the MDF rack with each device in place, and the cables of the
+        port map.
+      job: ztp.DesignBuildTheNetwork
+      with: {office_prefix: confirm_office_prefix.office_prefix}
+  - Select profile and firmware:
+      job: ztp.SelectTargets
+      after: [Design and build the network]
   - Request DNS records:
-      job: itsm.RequestDnsRecords
-      after: [Create office records]
+      manual: network-engineering
+      description: >-
+        Raise the site's DNS records with the DNS team in ServiceNow, using the records below. Mark done with a
+        comment naming the ticket.
+      with: {inventory: design_and_build_the_network.inventory}
+      after: [Design and build the network]
   - Request cloud onboarding:
-      job: itsm.RequestCloudOnboarding
-      after: [Create office records]
-  - Pre-site tickets resolved:
-      wait: itsm.TicketsResolved
-      with: {dns_ticket: request_dns_records.dns_ticket, jira_key: request_cloud_onboarding.jira_key}
+      manual: network-engineering
+      description: >-
+        Raise the site's cloud onboarding request with the cloud team in JIRA, using the records below. Mark done
+        with a comment naming the ticket.
+      with: {inventory: design_and_build_the_network.inventory}
+      after: [Design and build the network]
+  - Confirm DNS and cloud resources created:
+      manual: network-engineering
+      description: >-
+        Once both teams close their tickets, check the DNS records resolve and the cloud onboarding is in place. Mark
+        done with a comment saying what you checked.
       after: [Request DNS records, Request cloud onboarding]
-      timeout: 10d
   - Raise corporate connection change:
+      manual: network-engineering
       description: >-
         The Palo's USB base config brings its VPN tunnels up at bootstrap, which connects the office to the corporate
-        network, so the change is approved before anyone goes to site.
-      job: itsm.RaiseChange
-      after: [Create office records]
+        network, so the change is approved before anyone goes to site. Raise the change in ServiceNow and mark done
+        with a comment naming the change number.
+      after: [Design and build the network]
   - Corporate connection change approved:
-      description: ServiceNow calls back when the CAB decides; a rejection fails the step and nothing is installed.
-      wait: callback
-      with: {change: raise_corporate_connection_change.change_number}
-      timeout: 5d
+      manual: network-engineering
+      description: >-
+        Once the CAB decides, mark done with a comment naming the approval. If the CAB rejects it, mark the step
+        failed with the reason: nothing is installed.
   - Prepare Panorama:
       job: panorama.PrepareOffice
-      after: [Create office records]
+      after: [Design and build the network]
   - Prepare Meraki network:
       job: meraki.PrepareNetwork
-      after: [Create office records]
+      after: [Design and build the network]
   - Claim Meraki devices:
       description: >-
         Claim the 9300 stack and the APs into the office's network by serial before install, so the switch has its
@@ -94,7 +119,7 @@ steps:
       with: {network_id: prepare_meraki_network.network_id}
   - Generate bootstrap artifacts:
       job: ztp.GenerateBootstrapArtifacts
-      with: {addresses: allocate_office_addressing.addresses, tunnels: prepare_panorama.tunnels}
+      with: {addresses: design_and_build_the_network.addresses, tunnels: prepare_panorama.tunnels}
       after: [Select profile and firmware, Prepare Panorama]
   - Publish bootstrap files:
       job: ztp.PublishBootstrapFiles
@@ -113,13 +138,13 @@ steps:
         MDF and patching are a hard prerequisite before any device work, and the 9300s must ship with the IOS-XE the
         purchase order asks for: nothing can upgrade them before they convert. Tick what you have confirmed; anything
         unticked fails the step, and Retry with changes records it once it's done.
-      after: [Create office records]
+      after: [Design and build the network]
   - Ready-for-install gate:
       wait: ztp.ReadinessGate
       after:
         - Publish bootstrap files
         - Write the USB drives
-        - Pre-site tickets resolved
+        - Confirm DNS and cloud resources created
         - Corporate connection change approved
         - Confirm site readiness
         - Claim Meraki devices
@@ -133,7 +158,7 @@ steps:
       description: >-
         The carrier calls back when the DIA circuit is extended to the MDF and tested, with the circuit ID.
       wait: callback
-      with: {circuit: create_office_records.circuit_id}
+      with: {circuit: design_and_build_the_network.circuit_id}
       after: [Mark ready for install]
       timeout: 30d
   - Rack, power and cable:
@@ -144,9 +169,9 @@ steps:
         the 9300 first, then the Palo pair, then the OpenGear. Don't configure anything: the devices bootstrap
         themselves.
       with:
-        rack_layout: create_office_records.rack_layout
-        port_map: create_office_records.port_map
-        power_on_order: create_office_records.power_on_order
+        rack_layout: design_and_build_the_network.rack_layout
+        port_map: design_and_build_the_network.port_map
+        power_on_order: design_and_build_the_network.power_on_order
       after: [Mark ready for install]
   - Record field tests:
       job: ztp.RecordFieldTests
@@ -166,7 +191,7 @@ steps:
         The Palo comes up first: every other device depends on its DHCP. The 9300's factory VLAN 1 bridges the ISP
         to the Palo's WAN; the Palo reads its USB drive at first boot, brings its VPN tunnels up and connects to
         Panorama over them. The active firewall bootstraps, then the passive one.
-      for_each: create_office_records.firewalls
+      for_each: design_and_build_the_network.firewalls
       workflow: ztp-firewall-bootstrap
       with: {artifact_version: generate_bootstrap_artifacts.artifact_version}
       waves: 1
@@ -183,7 +208,7 @@ steps:
         The switch, the OpenGear and the APC cards each take DHCP from the Palo, fetch their file from the central
         file server by serial, and the file server calls back. Nautobot checks each one is the box it planned; the
         switch converts to Meraki mode and pulls the rest of its config from the Dashboard.
-      for_each: create_office_records.infrastructure
+      for_each: design_and_build_the_network.infrastructure
       workflow: ztp-call-home
       with: {artifact_version: generate_bootstrap_artifacts.artifact_version}
   - Bootstrapped gate:
@@ -215,14 +240,14 @@ steps:
   - phase: Configure
   - Configure firewalls:
       description: Upgrade PAN-OS and push the Panorama templates, one firewall at a time so the pair keeps a peer.
-      for_each: create_office_records.firewalls
+      for_each: design_and_build_the_network.firewalls
       workflow: ztp-device-build
       waves: 1
   - Configure infrastructure:
       description: >-
         Apply the switch profile from the Dashboard, and upgrade and configure the OpenGear and the APC cards, all at
         once.
-      for_each: create_office_records.infrastructure
+      for_each: design_and_build_the_network.infrastructure
       workflow: ztp-device-build
       after: [Mark platform connected]
   - Upgrade Meraki firmware:
@@ -290,7 +315,7 @@ steps:
       manual: field-ops
       description: Walk the floor plan and check each AP is mounted where the plan says.
       when: {ap_walkthrough: true}
-      with: {access_points: create_office_records.access_points}
+      with: {access_points: design_and_build_the_network.access_points}
       after: [Mark validated]
   - Site acceptance:
       approve: network-engineering
@@ -301,8 +326,11 @@ steps:
       timeout: 14d
   - Commission site: ztp.CommissionSite
   - Close change:
-      job: itsm.CloseChange
-      with: {change_number: raise_corporate_connection_change.change_number, details: validated_gate.evidence}
+      manual: network-engineering
+      description: >-
+        Close the corporate connection change in ServiceNow, attaching the validation evidence below. Mark done with
+        a comment naming the change number.
+      with: {evidence: validated_gate.evidence}
   - Notify:
       job: demo.Notify
-      with: {run_id: run.id, requested_by: run.requested_by, details: create_office_records.inventory}
+      with: {run_id: run.id, requested_by: run.requested_by, details: design_and_build_the_network.inventory}
