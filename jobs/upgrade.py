@@ -96,26 +96,22 @@ class CheckRunningOsVersion(MockJob):
 
 
 class StoreSnapshotOutput(MockJob):
-    """Run validation rules and keep their raw output as a snapshot."""
+    """Run a validation rule and keep its raw output as a snapshot."""
 
-    validation_rules = JSONVar(description="The validation rules to run, by name")
-    snapshot_label = StringVar()
-    snapshot_name = StringVar()
+    validation_rule = StringVar(description="The validation rule to run, by name")
     fail_job_on_task_failure = BooleanVar(default=True)
 
     class Meta:
         """Meta."""
 
         name = "Mock upgrade: store snapshot output"
-        description = "Run validation rules and keep their raw output as a snapshot."
+        description = "Run a validation rule and keep its raw output as a snapshot."
 
-    def run(self, device, validation_rules, snapshot_label, snapshot_name, fail_job_on_task_failure):  # pylint: disable=arguments-differ,too-many-arguments,too-many-positional-arguments
-        """Return {snapshot, snapshot_label, snapshot_name}."""
-        self.mock(f"Run {validation_rules} on {device} and store '{snapshot_name}' as {snapshot_label}")
+    def run(self, device, validation_rule, fail_job_on_task_failure):  # pylint: disable=arguments-differ
+        """Return {snapshot}."""
+        self.mock(f"Run '{validation_rule}' on {device} and keep its output")
         return {
             "snapshot": {"users": PRE_SNAPSHOT["users"]},
-            "snapshot_label": snapshot_label,
-            "snapshot_name": snapshot_name,
             "fail_job_on_task_failure": bool(fail_job_on_task_failure),
         }
 
@@ -185,33 +181,25 @@ class CustomFileTransfer(MockJob):
 
 
 class TakeSnapshot(MockJob):
-    """Run validation rule groups, or rules, and keep the result as a snapshot."""
+    """Run validation rule groups, or one rule, and keep the result as a snapshot."""
 
     validation_rule_groups = JSONVar(required=False, description="The validation rule groups to run, by name")
-    validation_rules = JSONVar(required=False, description="The validation rules to run, by name")
-    snapshot_label = StringVar()
-    snapshot_name = StringVar()
+    validation_rule = StringVar(required=False, default="", description="One validation rule to run, by name")
+    post_upgrade = BooleanVar(default=False, description="Taken after the upgrade: the snapshot differs from before")
     fail_job_on_task_failure = BooleanVar(default=True)
 
     class Meta:
         """Meta."""
 
         name = "Mock upgrade: take snapshot"
-        description = "Run validation rule groups, or rules, and keep the result as a snapshot."
+        description = "Run validation rule groups, or one rule, and keep the result as a snapshot."
 
-    def run(
-        self, device, validation_rule_groups, validation_rules, snapshot_label, snapshot_name, fail_job_on_task_failure
-    ):  # pylint: disable=arguments-differ,too-many-arguments,too-many-positional-arguments
-        """Return {snapshot, snapshot_label, snapshot_name}: the post snapshots differ from the pre ones."""
-        what = validation_rule_groups or validation_rules or []
-        self.mock(f"Run {what} on {device} and store '{snapshot_name}' as {snapshot_label}")
-        snapshot = (
-            POST_SNAPSHOT if snapshot_label.startswith("post") or snapshot_label.endswith("post") else PRE_SNAPSHOT
-        )
+    def run(self, device, validation_rule_groups, validation_rule, post_upgrade, fail_job_on_task_failure):  # pylint: disable=arguments-differ,too-many-arguments,too-many-positional-arguments
+        """Return {snapshot}: the post-upgrade snapshot differs from the pre-upgrade one."""
+        what = validation_rule_groups or validation_rule
+        self.mock(f"Run {what} on {device}, post_upgrade={post_upgrade}")
         return {
-            "snapshot": snapshot,
-            "snapshot_label": snapshot_label,
-            "snapshot_name": snapshot_name,
+            "snapshot": POST_SNAPSHOT if post_upgrade else PRE_SNAPSHOT,
             "fail_job_on_task_failure": bool(fail_job_on_task_failure),
         }
 

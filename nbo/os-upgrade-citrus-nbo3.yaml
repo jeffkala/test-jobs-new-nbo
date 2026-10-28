@@ -9,7 +9,9 @@
 #     nbo_record_device              -> dropped; the run is for one device, and every job receives it
 #     nbo_record_workflow_data/key   -> a workflow input named after the key, passed under the job's field name
 #     snapshot_label references      -> the output of the step that took that snapshot, such as upgrade_pre_checks.snapshot
-#     model lookups by name          -> the names, such as validation_rules: ["Get Users"]
+#     snapshot_label, snapshot_name  -> dropped; a later step reads the snapshot as the earlier step's output
+#     model lookups by name          -> an input whose default is the name, such as users_rule
+#     other fixed text               -> an input with that default (with: takes no literal text), or the job's own default
 #     is_null                        -> dropped (the job's default)
 #
 # The inputs that end in _id were Nautobot object references (SoftwareImageFile, SoftwareVersion, ExternalIntegration);
@@ -60,6 +62,40 @@ inputs:
     type: string
     label: "SNMP contact config"
     help: "The config lines that set the SNMP contact during the upgrade"
+  users_rule:
+    type: string
+    label: "Users validation rule"
+    default: "Get Users"
+    help: "The operational-compliance rule that lists logged-in users"
+  arp_rule:
+    type: string
+    label: "ARP validation rule"
+    default: "Get ARP Table"
+    help: "The operational-compliance rule that reads the ARP table"
+  interfaces_rule:
+    type: string
+    label: "Interfaces validation rule"
+    default: "Get Interfaces"
+    help: "The operational-compliance rule that reads interface status"
+  syslog_clear_command:
+    type: string
+    label: "Clear syslog command"
+    default: "clear logging"
+  leaf_port_pattern:
+    type: string
+    label: "Leaf port pattern"
+    default: "(-t2b|-dcc|-cor|-(a*)spn)"
+    help: "Regex of the interface descriptions the port disable step leaves alone"
+  leaf_port_snmp_pattern:
+    type: string
+    label: "Leaf port SNMP skip line"
+    default: "no snmp trap link-change"
+    help: "A port whose config has this line is left alone"
+  leaf_port_up_status:
+    type: string
+    label: "Leaf port up status"
+    default: notconnect
+    help: "The status a port must have to be shut: notconnect while testing, connected in production"
 steps:
   - phase: Prepare
   - Upgrade setup: upgrade.UpgradeSetup
@@ -71,11 +107,7 @@ steps:
       with: {software_image_file: software_image_id, pre_upgrade: true, debug: true}
   - Get active users:
       job: upgrade.StoreSnapshotOutput
-      with:
-        validation_rules: ["Get Users"]
-        snapshot_label: get_users
-        snapshot_name: "Get Users"
-        fail_job_on_task_failure: true
+      with: {validation_rule: users_rule, fail_job_on_task_failure: true}
   - Detect admin users:
       job: upgrade.DetectAdminUsers
       with: {regex_pattern: admin_username_regex, snapshot: get_active_users.snapshot}
@@ -109,18 +141,10 @@ steps:
   - phase: Pre-checks
   - Upgrade pre-checks:
       job: upgrade.TakeSnapshot
-      with:
-        validation_rule_groups: validation_rule_groups
-        snapshot_label: prechecks
-        snapshot_name: "Pre-Upgrade Checks"
-        fail_job_on_task_failure: true
+      with: {validation_rule_groups: validation_rule_groups, fail_job_on_task_failure: true}
   - Pre-upgrade ARP table:
       job: upgrade.TakeSnapshot
-      with:
-        validation_rules: ["Get ARP Table"]
-        snapshot_label: arp_table_pre
-        snapshot_name: "Pre-Upgrade ARP Table"
-        fail_job_on_task_failure: true
+      with: {validation_rule: arp_rule, fail_job_on_task_failure: true}
   - Pre-upgrade backup:
       job: upgrade.CustomFileUpload
       with:
@@ -154,7 +178,7 @@ steps:
   - Clear syslog:
       job: upgrade.CustomCommandWrapper
       with:
-        command: "clear logging"
+        command: syslog_clear_command
         dispatch_pattern:
           arista_eos:
             method: get_command
@@ -166,17 +190,17 @@ steps:
               Clear logging buffer: ""
   - Enter maintenance mode:
       job: upgrade.MaintenanceMode
-      with: {unit: System, enable: true, transition_timer: 300}
+      with: {enable: true, transition_timer: 300}
   - Disable leaf switch access ports:
       job: upgrade.DisableLeafInterfaces
       with:
-        regex_pattern: "(-t2b|-dcc|-cor|-(a*)spn)"
-        snmp_cli_pattern: "no snmp trap link-change"
-        up_status: notconnect  # TODO: change to connected after testing
+        regex_pattern: leaf_port_pattern
+        snmp_cli_pattern: leaf_port_snmp_pattern
+        up_status: leaf_port_up_status
         debug: true
   - Save config:
       job: upgrade.SaveConfig
-      with: {save_filename: "startup-config", debug: true}
+      with: {debug: true}
 
   - phase: Upgrade
   - Athena check-in 3:
@@ -193,19 +217,15 @@ steps:
       timeout: 1h
   - Exit maintenance mode:
       job: upgrade.MaintenanceMode
-      with: {unit: System, enable: false, transition_timer: 300}
+      with: {enable: false, transition_timer: 300}
   - Re-enable leaf switch access ports:
       job: upgrade.ReenableLeafInterfaces
-      with: {down_status: disabled, debug: true}
+      with: {debug: true}
 
   - phase: Verify
   - Upgrade post-checks:
       job: upgrade.TakeSnapshot
-      with:
-        validation_rule_groups: validation_rule_groups
-        snapshot_label: postchecks
-        snapshot_name: "Post-Upgrade Checks"
-        fail_job_on_task_failure: true
+      with: {validation_rule_groups: validation_rule_groups, post_upgrade: true, fail_job_on_task_failure: true}
   - Compare upgrade pre and post-checks:
       job: upgrade.CompareSnapshots
       with:
@@ -215,7 +235,7 @@ steps:
   - Interface remediation:
       job: upgrade.InterfaceRemediation
       with:
-        validation_rule: "Get Interfaces"
+        validation_rule: interfaces_rule
         precheck: upgrade_pre_checks.snapshot
         postcheck: upgrade_post_checks.snapshot
         dispatch_pattern:
@@ -230,11 +250,7 @@ steps:
         debug: true
   - Post-upgrade ARP table:
       job: upgrade.TakeSnapshot
-      with:
-        validation_rules: ["Get ARP Table"]
-        snapshot_label: arp_table_post
-        snapshot_name: "Post-Upgrade ARP Table"
-        fail_job_on_task_failure: true
+      with: {validation_rule: arp_rule, post_upgrade: true, fail_job_on_task_failure: true}
   - ARP remediation:
       job: upgrade.ArpRemediation
       with:

@@ -1,0 +1,51 @@
+name: compliance-campaign
+description: >-
+  Audit a group of devices against the golden config, approve the fix, remediate every device that drifted in
+  waves, and publish the report before and after.
+for: dynamic_group
+inputs:
+  ticket: {type: string, pattern: "^(CHG|RITM)[0-9]{7}$", help: "The change or request, such as CHG0031337"}
+  features:
+    type: list
+    default: [aaa, ntp, snmp, logging, banner, ssh]
+    help: "The golden-config features to check, one a line"
+  mode:
+    type: choice
+    choices: [remediate, report-only]
+    default: remediate
+    help: "report-only audits and reports, and changes nothing"
+  demo_failure:
+    type: choice
+    label: "Demo: make a step fail"
+    help: "Fails once for this ticket, so you can show the recovery"
+    choices: [none, remediation-fails, still-noncompliant]
+    default: none
+steps:
+  - phase: Audit
+  - Back up configs: compliance.BackupConfigs
+  - Run compliance: compliance.RunCompliance
+
+  - phase: Decide
+  - Approve remediation:
+      approve: network-change
+      description: >-
+        Read the compliance report: these devices drifted from the golden config. Approve to remediate them
+        three at a time; a high-risk fix on a device asks again.
+      when: {mode: remediate, run_compliance.noncompliant: true}
+      timeout: 2d
+
+  - phase: Remediate
+  - Remediate devices:
+      for_each: run_compliance.noncompliant
+      workflow: compliance-remediate-device
+      when: {mode: remediate, run_compliance.noncompliant: true}
+      waves: 3
+
+  - phase: Report
+  - Re-run compliance: compliance.RunCompliance
+  - Publish report:
+      job: compliance.PublishReport
+      with: {score_before: run_compliance.score, score_after: re_run_compliance.score}
+  - Notify:
+      job: demo.Notify
+      with: {run_id: run.id, requested_by: run.requested_by, summary: publish_report.improvement}

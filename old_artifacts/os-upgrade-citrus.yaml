@@ -1,0 +1,599 @@
+---
+- name: "NBO: OS Upgrades"
+  step_types:
+    - "Upgrade Setup"
+    - "Athena Check-In (1)"
+    - "Check Pre-Upgrade OS Version"
+    - "Get Active Users"
+    - "Detect Admin Users"
+    - "Verify Peer Health"
+    - "Copy OS Image"
+    - "Upgrade Pre-Checks"
+    - "Pre-Upgrade ARP Table"
+    - "Pre-Upgrade Backup"
+    - "Athena Check-In (2)"
+    - "Update SNMP Contact"
+    - "Clear Syslog"
+    - "Enter Maintenance Mode"
+    - "Disable Leaf Switch Access Ports"
+    - "Save Config"
+    - "Athena Check-In (3)"
+    - "Install OS Image"
+    - "Exit Maintenance Mode"
+    - "Re-enable Leaf Switch Access Ports"
+    - "Upgrade Post-Checks"
+    - "Compare Upgrade Pre & Post-Checks"
+    - "Interface Remediation"
+    - "Post-Upgrade ARP Table"
+    - "ARP Remediation"
+    - "Check Post-Upgrade OS Version"
+    - "Post-Upgrade Backup"
+    - "Update Device Software Version"
+
+---
+- name: "Upgrade Setup"
+  job: "NBO Workflow: Upgrade Setup"
+  weight: 1
+  job_execution_type: immediate
+- name: "Athena Check-In (1)"
+  job: "NBO Workflow: Athena Check-In"
+  weight: 10
+  job_execution_type: auto
+  job_form_defaults:
+    mock_call:
+      type: booleanvar
+      value: "true"
+- name: "Check Pre-Upgrade OS Version"
+  job: "NBO Workflow: Check Running OS Version"
+  weight: 20
+  job_execution_type: auto
+  job_form_defaults:
+    platform:
+      type: objvar
+      is_null: "true"
+    devices:
+      type: multiobjvar
+      nbo_record_device: "true"
+    software_image_file:
+      type: objvar
+      import_location: nautobot.dcim.models
+      model: SoftwareImageFile
+      nbo_record_workflow_data: "true"
+      key: software_image_id
+    debug:
+      type: booleanvar
+      value: "true"
+    pre_upgrade:
+      type: booleanvar
+      value: "true"
+- name: "Get Active Users"
+  job: "NBO Workflow: Store Snapshot Output"
+  weight: 30
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      type: multiobjvar
+      nbo_record_device: "true"
+    validation_rules:
+      type: multiobjvar
+      import_location: nautobot_operational_compliance.models
+      model: ValidationRule
+      lookups:
+        - name: "Get Users"
+    snapshot_label:
+      type: stringvar
+      value: get_users
+    snapshot_name:
+      type: stringvar
+      value: "Get Users"
+    fail_job_on_task_failure:
+      type: booleanvar
+      value: "true"
+- name: "Detect Admin Users"
+  job: "NBO Workflow: Detect Admin Users"
+  weight: 40
+  job_execution_type: auto
+  job_form_defaults:
+    regex_pattern:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: admin_username_regex
+    snapshot_label:
+      type: stringvar
+      value: "get_users"
+- name: "Verify Peer Health"
+  job: "NBO Workflow: Verify Peer Devices"
+  weight: 100
+  job_execution_type: auto
+  job_form_defaults:
+    dispatch_pattern:
+      type: jsonvar
+      value:
+        arista_eos:
+          interface_status_command: "show interfaces status"
+          interface_snmp_config_command: "show run interface {intf} | include snmp"
+          user_session_command: "show users"
+          maint_status_command: "show maintenance"
+          supports_raw_text: true
+        cisco_xe:
+          interface_status_command: "show ip interface brief"
+          interface_snmp_config_command: "show run interface {intf} | include snmp"
+          user_session_command: "show users"
+          supports_raw_text: false
+    admin_username_regex:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: admin_username_regex
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Copy OS Image"
+  job: "NBO Workflow: Custom File Transfer"
+  weight: 150
+  job_execution_type: auto
+  job_form_defaults:
+    software_image_file:
+      type: objvar
+      import_location: nautobot.dcim.models
+      model: SoftwareImageFile
+      nbo_record_workflow_data: "true"
+      key: software_image_id
+    scp_server:
+      type: objvar
+      import_location: nautobot.extras.models
+      model: ExternalIntegration
+      nbo_record_workflow_data: "true"
+      key: scp_server_id
+    download_url:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: "image_download_url"
+    vrf:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: mgmt_vrf
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Upgrade Pre-Checks"
+  job: "NBO Workflow: Take Snapshot"
+  weight: 200
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      type: multiobjvar
+      nbo_record_device: "true"
+    validation_rule_groups:
+      type: multiobjvar
+      nbo_record_workflow_data: "true"
+      key: validation_rule_groups
+    snapshot_label:
+      type: stringvar
+      value: prechecks
+    snapshot_name:
+      type: stringvar
+      value: "Pre-Upgrade Checks"
+    fail_job_on_task_failure:
+      type: booleanvar
+      value: "true"
+- name: "Pre-Upgrade ARP Table"
+  job: "NBO Workflow: Take Snapshot"
+  weight: 250
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      type: multiobjvar
+      nbo_record_device: "true"
+    validation_rules:
+      type: multiobjvar
+      import_location: nautobot_operational_compliance.models
+      model: ValidationRule
+      lookups:
+        - name: "Get ARP Table"
+    snapshot_label:
+      type: stringvar
+      value: arp_table_pre
+    snapshot_name:
+      type: stringvar
+      value: "Pre-Upgrade ARP Table"
+    fail_job_on_task_failure:
+      type: booleanvar
+      value: "true"
+- name: "Pre-Upgrade Backup"
+  job: "NBO Workflow: Custom File Upload"
+  weight: 300
+  job_execution_type: auto
+  job_form_defaults:
+    scp_server:
+      type: objvar
+      import_location: nautobot.extras.models
+      model: ExternalIntegration
+      nbo_record_workflow_data: "true"
+      key: scp_server_id
+    file_name:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: pre_cfg_file
+    vrf:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: mgmt_vrf
+    dispatch_pattern:
+      type: jsonvar
+      value:
+        arista_eos:
+          method: get_command_with_prompts
+          command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+          last_read: 5
+          prompt_responses:
+            password: "{secret}"
+        cisco_xe:
+          method: get_command_with_prompts
+          command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+          last_read: 5
+          prompt_responses:
+            Address or name of remote host: ""
+            Destination username: ""
+            Destination filename: ""
+            Password: "{secret}"
+- name: "Athena Check-In (2)"
+  job: "NBO Workflow: Athena Check-In"
+  weight: 350
+  job_execution_type: auto
+  job_form_defaults:
+    mock_call:
+      type: booleanvar
+      value: "true"
+- name: "Update SNMP Contact"
+  job: "NBO Workflow: Custom Config Wrapper"
+  weight: 400
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      nbo_record_device: "true"
+      type: objvar
+    config:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: snmp_contact_command
+- name: "Clear Syslog"
+  job: "NBO Workflow: Custom Command Wrapper"
+  weight: 450
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      nbo_record_device: "true"
+      type: objvar
+    command:
+      value: "clear logging"
+      type: stringvar
+    dispatch_pattern:
+      value:
+        arista_eos:
+          method: get_command
+          strip_prompt: false
+          strip_command: false
+        cisco_xe:
+          method: get_command_with_prompts
+          prompt_responses:
+            Clear logging buffer: ""
+      type: jsonvar
+- name: "Enter Maintenance Mode"
+  job: "NBO Workflow: Maintenance Mode"
+  weight: 500
+  job_execution_type: auto
+  job_form_defaults:
+    unit:
+      type: stringvar
+      value: System
+    enable:
+      type: booleanvar
+      value: "true"
+    transition_timer:
+      type: intvar
+      value: 300
+- name: "Disable Leaf Switch Access Ports"
+  job: "NBO Workflow: Disable Leaf Interfaces"
+  weight: 550
+  job_execution_type: auto
+  job_form_defaults:
+    regex_pattern:
+      type: stringvar
+      value: "(-t2b|-dcc|-cor|-(a*)spn)"
+    snmp_cli_pattern:
+      type: stringvar
+      value: "no snmp trap link-change"
+    up_status:
+      type: stringvar
+      value: notconnect #change to 'connected' after testing!
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Save Config"
+  job: "NBO Workflow: Save Config"
+  weight: 600
+  job_execution_type: auto
+  job_form_defaults:
+    devices:
+      type: multiobjvar
+      nbo_record_device: "true"
+    save_filename:
+      type: stringvar
+      value: "startup-config"
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Athena Check-In (3)"
+  job: "NBO Workflow: Athena Check-In"
+  weight: 650
+  job_execution_type: auto
+  job_form_defaults:
+    mock_call:
+      type: booleanvar
+      value: "true"
+- name: "Install OS Image"
+  job: "NBO Workflow: Install OS"
+  weight: 1000
+  job_execution_type: auto
+  job_form_defaults:
+    platform:
+      type: objvar
+      is_null: "true"
+    devices:
+      type: multiobjvar
+      nbo_record_device: "true"
+    software_version:
+      type: objvar
+      is_null: "true"
+    software_image_file:
+      type: objvar
+      import_location: nautobot.dcim.models
+      model: SoftwareImageFile
+      nbo_record_workflow_data: "true"
+      key: software_image_id
+    kickstart_image_file:
+      type: objvar
+      is_null: "true"
+    reboot:
+      type: booleanvar
+      value: "true"
+    extra_options:
+      type: jsonvar
+      value: {}
+    debug:
+      type: booleanvar
+      value: "true"
+    convergence_timer:
+      type: intvar
+      value: 60
+- name: "Exit Maintenance Mode"
+  job: "NBO Workflow: Maintenance Mode"
+  weight: 1050
+  job_execution_type: auto
+  job_form_defaults:
+    unit:
+      type: stringvar
+      value: System
+    enable:
+      type: booleanvar
+      value: "false"
+    transition_timer:
+      type: intvar
+      value: 300
+- name: "Re-enable Leaf Switch Access Ports"
+  job: "NBO Workflow: Re-enable Leaf Interfaces"
+  weight: 1100
+  job_execution_type: auto
+  job_form_defaults:
+    down_status:
+      type: stringvar
+      value: disabled
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Upgrade Post-Checks"
+  job: "NBO Workflow: Take Snapshot"
+  weight: 1150
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      type: multiobjvar
+      nbo_record_device: "true"
+    validation_rule_groups:
+      type: multiobjvar
+      nbo_record_workflow_data: "true"
+      key: "validation_rule_groups"
+    snapshot_label:
+      type: stringvar
+      value: postchecks
+    snapshot_name:
+      type: stringvar
+      value: "Post-Upgrade Checks"
+    fail_job_on_task_failure:
+      type: booleanvar
+      value: "true"
+- name: "Compare Upgrade Pre & Post-Checks"
+  job: "NBO Workflow: Compare Snapshots"
+  weight: 1200
+  job_execution_type: auto
+  job_form_defaults:
+    pre_snapshot:
+      type: objvar
+      import_location: nautobot_operational_compliance.models
+      model: Snapshot
+      nbo_record_workflow_data: "true"
+      key: prechecks
+    post_snapshot:
+      type: objvar
+      import_location: nautobot_operational_compliance.models
+      model: Snapshot
+      nbo_record_workflow_data: "true"
+      key: postchecks
+    fail_fast:
+      type: booleanvar
+      value: "false"
+- name: "Interface Remediation"
+  job: "NBO Workflow: Interface Remediation"
+  weight: 1250
+  job_execution_type: auto
+  job_form_defaults:
+    validation_rule:
+      type: stringvar
+      value: "Get Interfaces"
+    precheck_label:
+      type: stringvar
+      value: prechecks
+    postcheck_label:
+      type: stringvar
+      value: postchecks
+    dispatch_pattern:
+      type: jsonvar
+      value:
+        arista_eos:
+          status_command: "show interfaces status"
+          bounce_cmd_set: "interface {intf}\nshutdown\nno shutdown"
+        cisco_xe:
+          status_command: "show ip interface brief"
+          bounce_cmd_set: "interface {intf}\nshutdown\nno shutdown"
+    convergence_timer:
+      type: intvar
+      value: 10
+    dryrun:
+      type: booleanvar
+      value: "false"
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Post-Upgrade ARP Table"
+  job: "NBO Workflow: Take Snapshot"
+  weight: 1300
+  job_execution_type: auto
+  job_form_defaults:
+    device:
+      type: multiobjvar
+      nbo_record_device: "true"
+    validation_rules:
+      type: multiobjvar
+      import_location: nautobot_operational_compliance.models
+      model: ValidationRule
+      lookups:
+        - name: "Get ARP Table"
+    snapshot_label:
+      type: stringvar
+      value: arp_table_post
+    snapshot_name:
+      type: stringvar
+      value: "Post-Upgrade ARP Table"
+    fail_job_on_task_failure:
+      type: booleanvar
+      value: "true"
+- name: "ARP Remediation"
+  job: "NBO Workflow: ARP Remediation"
+  weight: 1350
+  job_execution_type: auto
+  job_form_defaults:
+    pre_snapshot_label:
+      type: stringvar
+      value: arp_table_pre
+    post_snapshot_label:
+      type: stringvar
+      value: arp_table_post
+    arp_vrf:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: "mgmt_vrf"
+    delta_threshold:
+      type: intvar
+      value: 5
+    dispatch_pattern:
+      type: jsonvar
+      value:
+        cisco_xe:
+          ping_command: "ping vrf {arp_vrf} {ip_addr}"
+          arp_command: "show ip arp vrf {arp_vrf} {ip_addr}"
+        arista_eos:
+          ping_command: "ping vrf {arp_vrf} {ip_addr}"
+          arp_command: "show ip arp vrf {arp_vrf} {ip_addr}"
+    debug:
+      type: booleanvar
+      value: "true"
+- name: "Check Post-Upgrade OS Version"
+  job: "NBO Workflow: Check Running OS Version"
+  weight: 1400
+  job_execution_type: auto
+  job_form_defaults:
+    platform:
+      type: objvar
+      is_null: "true"
+    devices:
+      type: multiobjvar
+      nbo_record_device: "true"
+    software_image_file:
+      type: objvar
+      import_location: nautobot.dcim.models
+      model: SoftwareImageFile
+      nbo_record_workflow_data: "true"
+      key: software_image_id
+    debug:
+      type: booleanvar
+      value: "true"
+    pre_upgrade:
+      type: booleanvar
+      value: "false"
+- name: "Post-Upgrade Backup"
+  job: "NBO Workflow: Custom File Upload"
+  weight: 1450
+  job_execution_type: auto
+  job_form_defaults:
+    scp_server:
+      type: objvar
+      import_location: nautobot.extras.models
+      model: ExternalIntegration
+      nbo_record_workflow_data: "true"
+      key: scp_server_id
+    file_name:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: post_cfg_file
+    vrf:
+      type: stringvar
+      nbo_record_workflow_data: "true"
+      key: mgmt_vrf
+    dispatch_pattern:
+      type: jsonvar
+      value:
+        arista_eos:
+          method: get_command_with_prompts
+          command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+          last_read: 5
+          prompt_responses:
+            password: "{secret}"
+        cisco_xe:
+          method: get_command_with_prompts
+          command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+          last_read: 5
+          prompt_responses:
+            Address or name of remote host: ""
+            Destination username: ""
+            Destination filename: ""
+            Password: "{secret}"
+- name: "Update Device Software Version"
+  job: "NBO Workflow: Assign New Software"
+  weight: 1500
+  job_execution_type: auto
+  job_form_defaults:
+    platform:
+      type: objvar
+      is_null: "true"
+    devices:
+      type: multiobjvar
+      nbo_record_device: "true"
+    software_version:
+      type: objvar
+      import_location: nautobot.dcim.models
+      model: SoftwareVersion
+      nbo_record_workflow_data: "true"
+      key: software_version_id
+    debug:
+      type: booleanvar
+      value: "true"
