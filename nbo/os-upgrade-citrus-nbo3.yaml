@@ -1,0 +1,282 @@
+# Converted from the NBO 2 "NBO: OS Upgrades" workflow (see os-upgrade-citrus.yaml) into the NBO 3 schema.
+#
+# How the old fields map:
+#   step weight                      -> step order inside the phases below (steps run one after another)
+#   job: "NBO Workflow: X"           -> upgrade.X (jobs/upgrade.py does not exist yet; the class names are new)
+#   job_execution_type               -> dropped; every step here is automatic (immediate and auto both ran unattended)
+#   job_form_defaults                -> with: {...}
+#     type/value                     -> the literal value
+#     nbo_record_device              -> dropped; the run is for one device, and every job receives it
+#     nbo_record_workflow_data/key   -> a workflow input named after the key, passed under the job's field name
+#     snapshot_label references      -> the output of the step that took that snapshot, such as upgrade_pre_checks.snapshot
+#     model lookups by name          -> the names, such as validation_rules: ["Get Users"]
+#     is_null                        -> dropped (the job's default)
+#
+# The inputs that end in _id were Nautobot object references (SoftwareImageFile, SoftwareVersion, ExternalIntegration);
+# the NBO 3 input types seen so far have no object type, so they are strings here.
+
+name: os-upgrade-citrus
+description: >-
+  Upgrade one switch's OS: check the running version, users and peers, copy the image, snapshot and back up, enter
+  maintenance mode, install and reload, leave maintenance mode, then compare the snapshots, remediate interfaces and
+  ARP, back up again and record the new version in Nautobot.
+for: device
+inputs:
+  software_image_id:
+    type: string
+    label: "Software image file"
+    help: "The SoftwareImageFile (dcim) to copy and install"
+  software_version_id:
+    type: string
+    label: "Software version"
+    help: "The SoftwareVersion (dcim) to assign to the device once it runs the new image"
+  scp_server_id:
+    type: string
+    label: "SCP server"
+    help: "The ExternalIntegration (extras) that serves the image and receives the config backups"
+  image_download_url:
+    type: string
+    label: "Image download URL"
+    help: "Where the device fetches the image from"
+  mgmt_vrf:
+    type: string
+    label: "Management VRF"
+    help: "The VRF the device uses to reach the SCP server and ARP targets"
+  admin_username_regex:
+    type: string
+    label: "Admin username pattern"
+    help: "Regex that matches admin usernames; a logged-in admin blocks the upgrade"
+  validation_rule_groups:
+    type: list
+    label: "Validation rule groups"
+    help: "The operational-compliance rule groups that make up the pre- and post-checks, one a line"
+  pre_cfg_file:
+    type: string
+    label: "Pre-upgrade backup file name"
+  post_cfg_file:
+    type: string
+    label: "Post-upgrade backup file name"
+  snmp_contact_command:
+    type: string
+    label: "SNMP contact config"
+    help: "The config lines that set the SNMP contact during the upgrade"
+steps:
+  - phase: Prepare
+  - Upgrade setup: upgrade.UpgradeSetup
+  - Athena check-in 1:
+      job: upgrade.AthenaCheckIn
+      with: {mock_call: true}
+  - Check pre-upgrade OS version:
+      job: upgrade.CheckRunningOsVersion
+      with: {software_image_file: software_image_id, pre_upgrade: true, debug: true}
+  - Get active users:
+      job: upgrade.StoreSnapshotOutput
+      with:
+        validation_rules: ["Get Users"]
+        snapshot_label: get_users
+        snapshot_name: "Get Users"
+        fail_job_on_task_failure: true
+  - Detect admin users:
+      job: upgrade.DetectAdminUsers
+      with: {regex_pattern: admin_username_regex, snapshot: get_active_users.snapshot}
+  - Verify peer health:
+      job: upgrade.VerifyPeerDevices
+      with:
+        admin_username_regex: admin_username_regex
+        debug: true
+        dispatch_pattern:
+          arista_eos:
+            interface_status_command: "show interfaces status"
+            interface_snmp_config_command: "show run interface {intf} | include snmp"
+            user_session_command: "show users"
+            maint_status_command: "show maintenance"
+            supports_raw_text: true
+          cisco_xe:
+            interface_status_command: "show ip interface brief"
+            interface_snmp_config_command: "show run interface {intf} | include snmp"
+            user_session_command: "show users"
+            supports_raw_text: false
+  - Copy OS image:
+      job: upgrade.CustomFileTransfer
+      with:
+        software_image_file: software_image_id
+        scp_server: scp_server_id
+        download_url: image_download_url
+        vrf: mgmt_vrf
+        debug: true
+      timeout: 1h
+
+  - phase: Pre-checks
+  - Upgrade pre-checks:
+      job: upgrade.TakeSnapshot
+      with:
+        validation_rule_groups: validation_rule_groups
+        snapshot_label: prechecks
+        snapshot_name: "Pre-Upgrade Checks"
+        fail_job_on_task_failure: true
+  - Pre-upgrade ARP table:
+      job: upgrade.TakeSnapshot
+      with:
+        validation_rules: ["Get ARP Table"]
+        snapshot_label: arp_table_pre
+        snapshot_name: "Pre-Upgrade ARP Table"
+        fail_job_on_task_failure: true
+  - Pre-upgrade backup:
+      job: upgrade.CustomFileUpload
+      with:
+        scp_server: scp_server_id
+        file_name: pre_cfg_file
+        vrf: mgmt_vrf
+        dispatch_pattern:
+          arista_eos:
+            method: get_command_with_prompts
+            command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+            last_read: 5
+            prompt_responses:
+              password: "{secret}"
+          cisco_xe:
+            method: get_command_with_prompts
+            command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+            last_read: 5
+            prompt_responses:
+              Address or name of remote host: ""
+              Destination username: ""
+              Destination filename: ""
+              Password: "{secret}"
+
+  - phase: Maintenance
+  - Athena check-in 2:
+      job: upgrade.AthenaCheckIn
+      with: {mock_call: true}
+  - Update SNMP contact:
+      job: upgrade.CustomConfigWrapper
+      with: {config: snmp_contact_command}
+  - Clear syslog:
+      job: upgrade.CustomCommandWrapper
+      with:
+        command: "clear logging"
+        dispatch_pattern:
+          arista_eos:
+            method: get_command
+            strip_prompt: false
+            strip_command: false
+          cisco_xe:
+            method: get_command_with_prompts
+            prompt_responses:
+              Clear logging buffer: ""
+  - Enter maintenance mode:
+      job: upgrade.MaintenanceMode
+      with: {unit: System, enable: true, transition_timer: 300}
+  - Disable leaf switch access ports:
+      job: upgrade.DisableLeafInterfaces
+      with:
+        regex_pattern: "(-t2b|-dcc|-cor|-(a*)spn)"
+        snmp_cli_pattern: "no snmp trap link-change"
+        up_status: notconnect  # TODO: change to connected after testing
+        debug: true
+  - Save config:
+      job: upgrade.SaveConfig
+      with: {save_filename: "startup-config", debug: true}
+
+  - phase: Upgrade
+  - Athena check-in 3:
+      job: upgrade.AthenaCheckIn
+      with: {mock_call: true}
+  - Install OS image:
+      job: upgrade.InstallOs
+      with:
+        software_image_file: software_image_id
+        reboot: true
+        extra_options: {}
+        convergence_timer: 60
+        debug: true
+      timeout: 1h
+  - Exit maintenance mode:
+      job: upgrade.MaintenanceMode
+      with: {unit: System, enable: false, transition_timer: 300}
+  - Re-enable leaf switch access ports:
+      job: upgrade.ReenableLeafInterfaces
+      with: {down_status: disabled, debug: true}
+
+  - phase: Verify
+  - Upgrade post-checks:
+      job: upgrade.TakeSnapshot
+      with:
+        validation_rule_groups: validation_rule_groups
+        snapshot_label: postchecks
+        snapshot_name: "Post-Upgrade Checks"
+        fail_job_on_task_failure: true
+  - Compare upgrade pre and post-checks:
+      job: upgrade.CompareSnapshots
+      with:
+        pre_snapshot: upgrade_pre_checks.snapshot
+        post_snapshot: upgrade_post_checks.snapshot
+        fail_fast: false
+  - Interface remediation:
+      job: upgrade.InterfaceRemediation
+      with:
+        validation_rule: "Get Interfaces"
+        precheck: upgrade_pre_checks.snapshot
+        postcheck: upgrade_post_checks.snapshot
+        dispatch_pattern:
+          arista_eos:
+            status_command: "show interfaces status"
+            bounce_cmd_set: "interface {intf}\nshutdown\nno shutdown"
+          cisco_xe:
+            status_command: "show ip interface brief"
+            bounce_cmd_set: "interface {intf}\nshutdown\nno shutdown"
+        convergence_timer: 10
+        dryrun: false
+        debug: true
+  - Post-upgrade ARP table:
+      job: upgrade.TakeSnapshot
+      with:
+        validation_rules: ["Get ARP Table"]
+        snapshot_label: arp_table_post
+        snapshot_name: "Post-Upgrade ARP Table"
+        fail_job_on_task_failure: true
+  - ARP remediation:
+      job: upgrade.ArpRemediation
+      with:
+        pre_snapshot: pre_upgrade_arp_table.snapshot
+        post_snapshot: post_upgrade_arp_table.snapshot
+        arp_vrf: mgmt_vrf
+        delta_threshold: 5
+        dispatch_pattern:
+          cisco_xe:
+            ping_command: "ping vrf {arp_vrf} {ip_addr}"
+            arp_command: "show ip arp vrf {arp_vrf} {ip_addr}"
+          arista_eos:
+            ping_command: "ping vrf {arp_vrf} {ip_addr}"
+            arp_command: "show ip arp vrf {arp_vrf} {ip_addr}"
+        debug: true
+  - Check post-upgrade OS version:
+      job: upgrade.CheckRunningOsVersion
+      with: {software_image_file: software_image_id, pre_upgrade: false, debug: true}
+
+  - phase: Close
+  - Post-upgrade backup:
+      job: upgrade.CustomFileUpload
+      with:
+        scp_server: scp_server_id
+        file_name: post_cfg_file
+        vrf: mgmt_vrf
+        dispatch_pattern:
+          arista_eos:
+            method: get_command_with_prompts
+            command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+            last_read: 5
+            prompt_responses:
+              password: "{secret}"
+          cisco_xe:
+            method: get_command_with_prompts
+            command: "copy running-config {upload_url} vrf {mgmt_vrf}"
+            last_read: 5
+            prompt_responses:
+              Address or name of remote host: ""
+              Destination username: ""
+              Destination filename: ""
+              Password: "{secret}"
+  - Update device software version:
+      job: upgrade.AssignNewSoftware
+      with: {software_version: software_version_id, debug: true}
